@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Mail, Clock, ArrowRight, MessageCircle, Send, Phone } from "lucide-react";
+import { Mail, ArrowRight, MessageCircle, Send, Phone } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Textarea } from "@/components/ui/Textarea";
@@ -321,10 +321,6 @@ export function LeadForm() {
                 </a>
               </div>
 
-              <p className="mt-auto inline-flex items-center gap-2 border-t border-border pt-6 text-body-sm text-fg-muted">
-                <Clock className="h-4 w-4 text-fg-subtle" aria-hidden="true" />
-                Отвечаем пн–пт 9:00–21:00 МСК
-              </p>
             </div>
           </AnimateIn>
         </div>
