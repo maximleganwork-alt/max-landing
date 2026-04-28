@@ -34,7 +34,7 @@ export function WhyMax() {
     <section
       id="why-max"
       aria-labelledby="why-max-heading"
-      className="section-padding bg-bg-subtle"
+      className="section-padding section-diagonal-bg"
     >
       <div className="container-narrow">
         <AnimateIn>

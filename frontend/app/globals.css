@@ -4,7 +4,7 @@
 
 :root {
   --bg: #ffffff;
-  --bg-subtle: #f7f9fc;
+  --bg-subtle: #f3f0fa;
   --bg-card: #ffffff;
   --bg-elevated: #ffffff;
 
@@ -93,6 +93,54 @@
 
   .section-padding {
     @apply py-10 md:py-20;
+  }
+
+  /* Диагональный «срез» сверху и снизу секции — фон через ::before, контент остаётся ровным */
+  .section-diagonal-bg {
+    position: relative;
+    z-index: 0;
+  }
+  .section-diagonal-bg::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--bg-subtle);
+    clip-path: polygon(
+      0 24px,
+      100% 0,
+      100% calc(100% - 24px),
+      0 100%
+    );
+    z-index: -1;
+  }
+  @media (min-width: 768px) {
+    .section-diagonal-bg::before {
+      clip-path: polygon(
+        0 40px,
+        100% 0,
+        100% calc(100% - 40px),
+        0 100%
+      );
+    }
+  }
+
+  /* Лид-форма: другой цвет, диагональный срез только сверху, низ упирается в футер */
+  .section-leadform-bg {
+    position: relative;
+    z-index: 0;
+  }
+  .section-leadform-bg::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: #ece5f7;
+    clip-path: polygon(0 24px, 100% 0, 100% 100%, 0 100%);
+    z-index: -1;
+  }
+  @media (min-width: 768px) {
+    .section-leadform-bg::before {
+      clip-path: polygon(0 40px, 100% 0, 100% 100%, 0 100%);
+    }
   }
 
   .glass-header {

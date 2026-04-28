@@ -115,7 +115,7 @@ export function LeadForm() {
   };
 
   return (
-    <section id="lead-form" aria-labelledby="lead-form-heading" className="section-padding bg-bg-subtle">
+    <section id="lead-form" aria-labelledby="lead-form-heading" className="section-padding section-leadform-bg">
       <div className="container-narrow">
         <AnimateIn>
           <SectionHeading

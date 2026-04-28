@@ -441,7 +441,7 @@ const services: ServiceCard[] = [
 
 export function Services() {
   return (
-    <section id="services" aria-labelledby="services-heading" className="section-padding bg-bg-subtle">
+    <section id="services" aria-labelledby="services-heading" className="section-padding section-diagonal-bg">
       <div className="container-narrow">
         {/* Глобальные SVG-defs: градиент для иконок карточек */}
         <svg

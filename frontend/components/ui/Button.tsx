@@ -20,7 +20,7 @@ const variantClasses: Record<Variant, string> = {
   primary:
     "bg-primary !text-white hover:bg-primary-hover disabled:opacity-60 disabled:hover:bg-primary",
   outline:
-    "border border-border-strong text-fg hover:border-primary hover:text-primary disabled:opacity-60",
+    "bg-bg-card border border-border-strong text-fg hover:border-primary hover:text-primary disabled:opacity-60",
   ghost: "text-fg hover:bg-bg-subtle disabled:opacity-60",
   link: "text-primary hover:underline underline-offset-4 disabled:opacity-60 px-0",
 };

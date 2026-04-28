@@ -58,7 +58,7 @@ export function WhyUs() {
     <section
       id="why-us"
       aria-labelledby="why-us-heading"
-      className="section-padding bg-bg-subtle"
+      className="section-padding section-diagonal-bg"
     >
       <div className="container-narrow">
         <AnimateIn>
