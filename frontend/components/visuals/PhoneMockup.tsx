@@ -90,7 +90,7 @@ export function PhoneMockup() {
   });
 
   return (
-    <div className="relative mx-auto w-full max-w-[340px] aspect-[9/19]">
+    <div className="relative mx-auto w-full max-w-[340px] aspect-[9/19] cursor-default select-none">
       {/* фоновое свечение */}
       <div
         className="pointer-events-none absolute -inset-12 -z-20"

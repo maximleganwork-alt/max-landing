@@ -67,6 +67,7 @@ export function Process() {
                   <div>
                     <h3 className="text-body font-semibold text-fg leading-tight">{step.title}</h3>
                     <p className="mt-1 text-caption text-fg-subtle">{step.duration}</p>
+                    <p className="mt-2 text-caption text-fg-muted leading-snug">{step.text}</p>
                   </div>
                 </div>
               </StaggerItem>
@@ -83,18 +84,21 @@ export function Process() {
             {steps.map((step, i) => (
               <StaggerItem
                 key={step.title}
-                className="relative flex items-center gap-4"
+                className="relative flex items-start gap-4"
               >
                 <div className="relative z-10 grid h-10 w-10 shrink-0 place-items-center rounded-full bg-gradient-brand text-white font-semibold text-body-sm">
                   {i + 1}
                 </div>
-                <div className="flex flex-1 items-baseline justify-between gap-3">
-                  <h3 className="text-body font-semibold text-fg leading-tight">
-                    {step.title}
-                  </h3>
-                  <span className="text-caption text-fg-subtle whitespace-nowrap">
-                    {step.duration}
-                  </span>
+                <div className="flex flex-1 flex-col gap-1">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <h3 className="text-body font-semibold text-fg leading-tight">
+                      {step.title}
+                    </h3>
+                    <span className="text-caption text-fg-subtle whitespace-nowrap">
+                      {step.duration}
+                    </span>
+                  </div>
+                  <p className="text-caption text-fg-muted leading-snug">{step.text}</p>
                 </div>
               </StaggerItem>
             ))}

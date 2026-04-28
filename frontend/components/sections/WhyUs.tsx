@@ -73,9 +73,11 @@ export function WhyUs() {
           {reasons.map(({ icon: Icon, title, text }) => (
             <StaggerItem key={title}>
               <div className="card card-hover h-full p-6">
-                <div className="grid h-11 w-11 place-items-center rounded-[var(--radius-sm)] bg-accent-soft text-primary">
-                  <Icon className="h-5 w-5" aria-hidden="true" />
-                </div>
+                <Icon
+                  aria-hidden="true"
+                  strokeWidth={1.6}
+                  className="h-8 w-8 [stroke:url(#cardIconGrad)]"
+                />
                 <h3 className="mt-5 text-h3 font-semibold text-fg leading-tight">{title}</h3>
                 <p className="mt-2 text-body-sm text-fg-muted leading-relaxed">{text}</p>
               </div>
