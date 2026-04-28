@@ -94,13 +94,12 @@ export function Tariffs() {
         <AnimateIn>
           <SectionHeading
             titleId="tariffs-heading"
-            eyebrow="Тарифы"
             title="Тарифы"
             lead="Цена зависит от сложности логики, количества интеграций и объёма AI-функционала. Все цены — стартовые, итоговая стоимость фиксируется в договоре после составления ТЗ."
           />
         </AnimateIn>
 
-        <Stagger className="mt-12 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <Stagger className="mt-8 sm:mt-12 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
           {tariffs.map((t) => (
             <StaggerItem
               key={t.id}

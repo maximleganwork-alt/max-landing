@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowRight, Menu, X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Logo } from "@/components/visuals/Logo";
-import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { Button } from "@/components/ui/Button";
 import { reachGoal } from "@/lib/analytics";
 import { cn, smoothScrollTo } from "@/lib/utils";
@@ -13,31 +12,12 @@ const navItems = [
   { href: "#services", label: "Услуги" },
   { href: "#process", label: "Процесс" },
   { href: "#tariffs", label: "Тарифы" },
-  { href: "#faq", label: "FAQ" },
+  { href: "#faq", label: "Вопросы" },
 ];
 
 export function Header() {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [hidden, setHidden] = useState(false);
   const [hoveredNav, setHoveredNav] = useState<string | null>(null);
-  const lastY = useRef(0);
-
-  useEffect(() => {
-    const onScroll = () => {
-      const y = window.scrollY;
-      if (y < 80) {
-        setHidden(false);
-      } else if (y > lastY.current + 6) {
-        setHidden(true);
-      } else if (y < lastY.current - 6) {
-        setHidden(false);
-      }
-      lastY.current = y;
-    };
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -60,11 +40,7 @@ export function Header() {
   };
 
   return (
-    <motion.header
-      animate={{ y: hidden && !menuOpen ? "-100%" : "0%" }}
-      transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
-      className="fixed inset-x-0 top-0 z-40 border-b border-border bg-bg"
-    >
+    <header className="fixed inset-x-0 top-0 z-40 border-b border-border bg-bg">
       <div className="container-narrow flex h-16 items-center justify-between gap-4 sm:h-[72px]">
         {/* логотип */}
         <a
@@ -117,10 +93,8 @@ export function Header() {
           </ul>
         </nav>
 
-        {/* справа: тема + CTA */}
+        {/* справа: CTA */}
         <div className="flex items-center gap-3">
-          <ThemeToggle className="hidden sm:inline-flex h-9 w-9" />
-
           <Button
             onClick={handleCta}
             size="sm"
@@ -158,7 +132,10 @@ export function Header() {
             role="dialog"
             aria-modal="true"
           >
-            <nav aria-label="Мобильное меню" className="container-narrow py-6">
+            <nav
+              aria-label="Мобильное меню"
+              className="container-narrow flex h-full flex-col py-6"
+            >
               <ul className="flex flex-col gap-1">
                 {navItems.map((item, i) => (
                   <motion.li
@@ -177,19 +154,15 @@ export function Header() {
                   </motion.li>
                 ))}
               </ul>
-              <div className="mt-6 flex flex-col gap-3">
+              <div className="mt-auto pt-6 safe-bottom">
                 <Button onClick={handleCta} size="lg" fullWidth>
                   Обсудить проект
                 </Button>
-                <div className="flex items-center justify-between rounded-[var(--radius)] border border-border bg-bg-card px-4 py-3">
-                  <span className="text-body-sm text-fg-muted">Тема</span>
-                  <ThemeToggle />
-                </div>
               </div>
             </nav>
           </motion.div>
         ) : null}
       </AnimatePresence>
-    </motion.header>
+    </header>
   );
 }

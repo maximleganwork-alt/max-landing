@@ -11,7 +11,6 @@ export type GoalName =
   | "form_submit_attempt"
   | "form_submit_success"
   | "form_submit_error"
-  | "theme_toggle"
   | "faq_open";
 
 declare global {

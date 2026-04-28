@@ -7,29 +7,24 @@ import { smoothScrollTo } from "@/lib/utils";
 
 const steps = [
   {
-    title: "Бриф и анализ",
-    duration: "1–2 дня",
-    text: "Изучаем задачу, цели, целевую аудиторию. Бесплатно.",
+    title: "Бриф",
+    duration: "1-2 дня",
+    text: "Изучаем задачу, фиксируем требования и стоимость. Бриф — бесплатно.",
   },
   {
-    title: "ТЗ и оценка",
-    duration: "1–3 дня",
-    text: "Фиксируем требования, сценарии, сроки и стоимость. Подписываем договор.",
-  },
-  {
-    title: "Дизайн и сценарии",
+    title: "ТЗ и сценарии",
     duration: "2–5 дней",
-    text: "Прорабатываем UX-сценарии диалога, экраны мини-приложения, тексты бота.",
+    text: "UX-сценарии диалога, экраны мини-приложения, тексты бота.",
   },
   {
     title: "Разработка",
     duration: "от 3 дней",
-    text: "Пишем код, подключаем интеграции, обучаем AI-модели на вашей базе знаний.",
+    text: "Пишем код, подключаем интеграции, обучаем AI-модели.",
   },
   {
     title: "Тестирование",
     duration: "1–2 дня",
-    text: "Проверяем сценарии, нагрузку, безопасность. Вы тестируете на своей стороне.",
+    text: "Проверяем сценарии, нагрузку и безопасность.",
   },
   {
     title: "Запуск",
@@ -37,41 +32,41 @@ const steps = [
     text: "Публикуем бота, настраиваем мониторинг и аналитику.",
   },
   {
-    title: "Гарантия и поддержка",
+    title: "Поддержка",
     duration: "постоянно",
-    text: "30 дней гарантии на исправление багов. Доработки — по отдельной договорённости.",
+    text: "30 дней гарантии. Доработки — по договорённости.",
   },
 ];
 
 export function Process() {
   return (
-    <section id="process" aria-labelledby="process-heading" className="section-padding bg-bg-subtle">
+    <section id="process" aria-labelledby="process-heading" className="section-padding">
       <div className="container-narrow">
         <AnimateIn>
           <SectionHeading
             titleId="process-heading"
-            eyebrow="Как мы работаем"
             title="Как мы работаем"
             lead="Прозрачно, по этапам, с фиксированной ценой в договоре. Вы всегда знаете, на какой стадии проект."
           />
         </AnimateIn>
 
         <Stagger className="mt-12 hidden lg:block">
-          <ol className="grid grid-cols-7 gap-4 relative">
-            <span
-              className="absolute top-5 left-[3rem] right-[3rem] h-px bg-border"
-              aria-hidden="true"
-            />
+          <ol className="grid grid-cols-6 gap-4 relative">
             {steps.map((step, i) => (
               <StaggerItem key={step.title} className="relative">
-                <div className="flex flex-col items-start gap-3">
+                {i < steps.length - 1 ? (
+                  <span
+                    aria-hidden="true"
+                    className="absolute top-5 left-[calc(50%+1.25rem)] right-[calc(0.25rem-50%)] h-px bg-border"
+                  />
+                ) : null}
+                <div className="flex flex-col items-center gap-3 text-center">
                   <div className="grid h-10 w-10 place-items-center rounded-full bg-gradient-brand text-white font-semibold text-body-sm relative z-10 shrink-0">
                     {i + 1}
                   </div>
                   <div>
                     <h3 className="text-body font-semibold text-fg leading-tight">{step.title}</h3>
                     <p className="mt-1 text-caption text-fg-subtle">{step.duration}</p>
-                    <p className="mt-2 text-body-sm text-fg-muted leading-snug">{step.text}</p>
                   </div>
                 </div>
               </StaggerItem>
@@ -79,30 +74,34 @@ export function Process() {
           </ol>
         </Stagger>
 
-        <Stagger className="mt-12 lg:hidden">
-          <ol className="relative flex flex-col gap-6 pl-12">
+        <Stagger className="mt-8 lg:hidden">
+          <ol className="relative flex flex-col gap-5">
             <span
-              className="absolute left-5 top-2 bottom-2 w-px bg-border"
               aria-hidden="true"
+              className="absolute left-5 top-5 bottom-5 w-px bg-border"
             />
             {steps.map((step, i) => (
-              <StaggerItem key={step.title} className="relative">
-                <div className="absolute -left-12 top-0 grid h-10 w-10 place-items-center rounded-full bg-gradient-brand text-white font-semibold text-body-sm">
+              <StaggerItem
+                key={step.title}
+                className="relative flex items-center gap-4"
+              >
+                <div className="relative z-10 grid h-10 w-10 shrink-0 place-items-center rounded-full bg-gradient-brand text-white font-semibold text-body-sm">
                   {i + 1}
                 </div>
-                <div>
-                  <div className="flex flex-wrap items-baseline gap-2">
-                    <h3 className="text-h3 font-semibold text-fg">{step.title}</h3>
-                    <span className="text-caption text-fg-subtle">{step.duration}</span>
-                  </div>
-                  <p className="mt-2 text-body text-fg-muted leading-relaxed">{step.text}</p>
+                <div className="flex flex-1 items-baseline justify-between gap-3">
+                  <h3 className="text-body font-semibold text-fg leading-tight">
+                    {step.title}
+                  </h3>
+                  <span className="text-caption text-fg-subtle whitespace-nowrap">
+                    {step.duration}
+                  </span>
                 </div>
               </StaggerItem>
             ))}
           </ol>
         </Stagger>
 
-        <AnimateIn delay={0.1} className="mt-10 flex justify-center">
+        <AnimateIn delay={0.1} className="mt-12 flex flex-col items-center gap-3">
           <Button
             variant="outline"
             size="lg"
@@ -110,6 +109,9 @@ export function Process() {
           >
             Начать с брифа
           </Button>
+          <p className="text-caption text-fg-subtle">
+            Бриф и оценка проекта — <span className="font-semibold text-success">бесплатно</span>
+          </p>
         </AnimateIn>
       </div>
     </section>

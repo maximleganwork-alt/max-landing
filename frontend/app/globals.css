@@ -44,33 +44,6 @@
   }
 }
 
-[data-theme="dark"] {
-  --bg: #070b14;
-  --bg-subtle: #0d1424;
-  --bg-card: #111a2e;
-  --bg-elevated: #152038;
-
-  --fg: #f1f5fb;
-  --fg-muted: #94a3b8;
-  --fg-subtle: #64748b;
-
-  --border: #1f2a44;
-  --border-strong: #2a3656;
-
-  --primary: #8b7bff;
-  --primary-hover: #a595ff;
-  --primary-fg: #ffffff;
-
-  --accent: #a593ff;
-  --accent-soft: #221a40;
-
-  --success: #34d399;
-  --error: #f87171;
-  --warning: #fbbf24;
-
-  --ring: #8b7bff;
-}
-
 @layer base {
   * {
     @apply border-border;
@@ -119,7 +92,7 @@
   }
 
   .section-padding {
-    @apply py-20 md:py-[120px];
+    @apply py-10 md:py-20;
   }
 
   .glass-header {
@@ -130,15 +103,8 @@
 
   .card {
     @apply bg-bg-card border border-border rounded-[var(--radius)];
-    transition: border-color 200ms ease, transform 200ms ease;
-  }
-
-  :root .card {
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-  }
-
-  [data-theme="dark"] .card {
-    box-shadow: none;
+    transition: border-color 200ms ease, transform 200ms ease;
   }
 
   .card-hover:hover {

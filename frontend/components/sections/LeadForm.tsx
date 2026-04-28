@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Mail, Clock, ArrowRight } from "lucide-react";
+import { Mail, Clock, ArrowRight, MessageCircle, Send, Phone } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Textarea } from "@/components/ui/Textarea";
@@ -12,17 +12,13 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { SectionHeading } from "@/components/ui/SectionHeading";
 import { AnimateIn } from "@/components/ui/AnimateIn";
 import { useToast } from "@/components/ui/Toast";
-import { DirectMessageModal } from "./DirectMessageModal";
 import { SmartCaptcha, type SmartCaptchaHandle } from "./SmartCaptcha";
 import { leadSchema, TARIFF_LABELS, type LeadFormData } from "@/lib/schema";
 import { reachGoal } from "@/lib/analytics";
 import { getUTMParams } from "@/lib/utils";
 
-const MAX_MESSAGE = 1000;
-
 export function LeadForm() {
   const { show } = useToast();
-  const [modalOpen, setModalOpen] = useState(false);
   const captchaRef = useRef<SmartCaptchaHandle>(null);
 
   const {
@@ -45,7 +41,6 @@ export function LeadForm() {
     },
   });
 
-  const messageValue = watch("message") ?? "";
   const tariffValue = watch("tariff") ?? "";
 
   useEffect(() => {
@@ -126,18 +121,17 @@ export function LeadForm() {
         <AnimateIn>
           <SectionHeading
             titleId="lead-form-heading"
-            eyebrow="Связаться"
             title="Расскажите о задаче"
             lead="Заполните форму — обсудим проект, бесплатно подготовим оценку и ТЗ. Или напишите нам напрямую — выбирайте удобный способ."
           />
         </AnimateIn>
 
-        <div className="mt-12 grid grid-cols-1 gap-6 lg:grid-cols-[3fr_2fr] lg:gap-8">
+        <div className="mt-8 sm:mt-12 grid grid-cols-1 gap-6 lg:grid-cols-[3fr_2fr] lg:gap-8">
           <AnimateIn delay={0.05}>
             <form
               onSubmit={handleSubmit(onSubmit)}
               noValidate
-              className="rounded-[var(--radius-lg)] border border-border bg-bg-card p-6 lg:p-8 flex flex-col gap-5"
+              className="flex flex-col gap-5 sm:rounded-[var(--radius-lg)] sm:border sm:border-border sm:bg-bg-card sm:p-6 lg:p-8"
             >
               <Input
                 label="Имя"
@@ -161,10 +155,9 @@ export function LeadForm() {
               <Textarea
                 label="Кратко о задаче"
                 placeholder="Опишите, что нужно сделать — мы изучим и подготовим оценку"
-                rows={4}
+                rows={3}
                 {...register("message")}
                 error={errors.message?.message}
-                counter={{ current: messageValue.length, max: MAX_MESSAGE }}
                 disabled={isSubmitting}
               />
 
@@ -247,7 +240,7 @@ export function LeadForm() {
           </AnimateIn>
 
           <AnimateIn delay={0.1}>
-            <div className="rounded-[var(--radius-lg)] border border-border bg-bg-card p-6 lg:p-8 h-full flex flex-col gap-6">
+            <div className="flex h-full flex-col gap-6 sm:rounded-[var(--radius-lg)] sm:border sm:border-border sm:bg-bg-card sm:p-6 lg:p-8">
               <div>
                 <h3 className="text-h3 font-semibold text-fg">Хотите написать самостоятельно?</h3>
                 <p className="mt-2 text-body-sm text-fg-muted leading-relaxed">
@@ -256,33 +249,93 @@ export function LeadForm() {
                 </p>
               </div>
 
-              <Button
-                variant="outline"
-                size="lg"
-                fullWidth
-                onClick={() => setModalOpen(true)}
-              >
-                Написать в мессенджер
-              </Button>
+              <div className="flex flex-col gap-3">
+                <a
+                  href="https://max.ru/@botmax_studio"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => reachGoal("direct_message_click_max")}
+                  className="group flex items-center gap-3 rounded-[var(--radius)] border border-border bg-bg-card px-4 py-3 transition-colors hover:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-gradient-brand text-white">
+                    <MessageCircle className="h-5 w-5" aria-hidden="true" />
+                  </span>
+                  <span className="flex flex-1 flex-col">
+                    <span className="text-body font-semibold text-fg leading-tight">
+                      Написать в MAX
+                    </span>
+                    <span className="text-caption text-fg-subtle leading-tight">
+                      @botmax_studio
+                    </span>
+                  </span>
+                  <ArrowRight className="h-4 w-4 text-fg-subtle transition-colors group-hover:text-primary" />
+                </a>
 
-              <div className="mt-auto flex flex-col gap-3 border-t border-border pt-6 text-body-sm text-fg-muted">
+                <a
+                  href="https://t.me/botmax_studio_tg"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => reachGoal("direct_message_click_telegram")}
+                  className="group flex items-center gap-3 rounded-[var(--radius)] border border-border bg-bg-card px-4 py-3 transition-colors hover:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#229ED9] text-white">
+                    <Send className="h-5 w-5" aria-hidden="true" />
+                  </span>
+                  <span className="flex flex-1 flex-col">
+                    <span className="text-body font-semibold text-fg leading-tight">
+                      Написать в Telegram
+                    </span>
+                    <span className="text-caption text-fg-subtle leading-tight">
+                      @botmax_studio_tg
+                    </span>
+                  </span>
+                  <ArrowRight className="h-4 w-4 text-fg-subtle transition-colors group-hover:text-primary" />
+                </a>
+
+                <a
+                  href="tel:+79787342641"
+                  className="group flex items-center gap-3 rounded-[var(--radius)] border border-border bg-bg-card px-4 py-3 transition-colors hover:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-success text-white">
+                    <Phone className="h-5 w-5" aria-hidden="true" />
+                  </span>
+                  <span className="flex flex-1 flex-col">
+                    <span className="text-body font-semibold text-fg leading-tight">
+                      Позвонить
+                    </span>
+                    <span className="text-caption text-fg-subtle leading-tight">
+                      +7 978 734 26 41
+                    </span>
+                  </span>
+                  <ArrowRight className="h-4 w-4 text-fg-subtle transition-colors group-hover:text-primary" />
+                </a>
+
                 <a
                   href="mailto:hello@example.ru"
-                  className="inline-flex items-center gap-2 hover:text-fg transition-colors"
+                  className="group flex items-center gap-3 rounded-[var(--radius)] border border-border bg-bg-card px-4 py-3 transition-colors hover:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <Mail className="h-4 w-4 text-fg-subtle" aria-hidden="true" />
-                  hello@example.ru
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-fg text-bg">
+                    <Mail className="h-5 w-5" aria-hidden="true" />
+                  </span>
+                  <span className="flex flex-1 flex-col">
+                    <span className="text-body font-semibold text-fg leading-tight">
+                      Написать на email
+                    </span>
+                    <span className="text-caption text-fg-subtle leading-tight">
+                      hello@example.ru
+                    </span>
+                  </span>
+                  <ArrowRight className="h-4 w-4 text-fg-subtle transition-colors group-hover:text-primary" />
                 </a>
-                <p className="inline-flex items-center gap-2">
-                  <Clock className="h-4 w-4 text-fg-subtle" aria-hidden="true" />
-                  пн–пт 10:00–19:00 МСК
-                </p>
               </div>
+
+              <p className="mt-auto inline-flex items-center gap-2 border-t border-border pt-6 text-body-sm text-fg-muted">
+                <Clock className="h-4 w-4 text-fg-subtle" aria-hidden="true" />
+                Отвечаем пн–пт 9:00–21:00 МСК
+              </p>
             </div>
           </AnimateIn>
         </div>
-
-        <DirectMessageModal open={modalOpen} onClose={() => setModalOpen(false)} />
       </div>
     </section>
   );

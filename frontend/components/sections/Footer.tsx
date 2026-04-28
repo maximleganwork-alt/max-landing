@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { Logo } from "@/components/visuals/Logo";
-import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { MessageCircle, Send } from "lucide-react";
 
 const services = [
@@ -16,7 +15,7 @@ const services = [
 const company = [
   { label: "Процесс работы", href: "#process" },
   { label: "Тарифы", href: "#tariffs" },
-  { label: "FAQ", href: "#faq" },
+  { label: "Вопросы", href: "#faq" },
   { label: "Связаться", href: "#lead-form" },
 ];
 
@@ -116,12 +115,9 @@ export function Footer() {
 
         <div className="mt-12 flex flex-col gap-4 border-t border-white/10 pt-6 text-caption text-slate-400 sm:flex-row sm:items-center sm:justify-between">
           <p>© 2026 BotMax. Все права защищены.</p>
-          <address className="not-italic text-center">
+          <address className="not-italic text-center sm:text-right">
             ИП Иванов Иван Иванович, ИНН 123456789012, ОГРНИП 123456789012345
           </address>
-          <div className="sm:ml-auto">
-            <ThemeToggle />
-          </div>
         </div>
       </div>
     </footer>

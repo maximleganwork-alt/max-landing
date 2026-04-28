@@ -25,7 +25,7 @@ interface ServiceCard {
 const services: ServiceCard[] = [
   {
     icon: MessageCircle,
-    title: "Боты поддержки клиентов",
+    title: "Боты поддержки",
     text: "Автоматизируем ответы на 80% типовых обращений. Тикеты, FAQ, маршрутизация на оператора.",
   },
   {
@@ -45,47 +45,46 @@ const services: ServiceCard[] = [
   },
   {
     icon: Megaphone,
-    title: "Маркетинговые боты",
+    title: "Маркетинг и лиды",
     text: "Лидогенерация, квизы, рассылки сегментам, персонализированные офферы.",
   },
   {
     icon: LayoutGrid,
-    title: "Мини-приложения внутри MAX",
-    text: "Полноценные веб-приложения, запускаемые из чата без перехода в браузер.",
+    title: "Мини-приложения",
+    text: "Полноценные веб-приложения, запускаемые прямо из чата без перехода в браузер.",
   },
   {
     icon: Sparkles,
-    title: "AI и LLM-интеграции",
+    title: "AI-интеграции",
     text: "GPT, GigaChat, YandexGPT. Умные диалоги, RAG по базе знаний, голос, распознавание изображений.",
   },
   {
     icon: Plug,
-    title: "Интеграции с CRM и ERP",
+    title: "CRM и ERP",
     text: "1С, Битрикс24, amoCRM, ваши API. Бот становится частью существующих процессов.",
   },
 ];
 
 export function Services() {
   return (
-    <section id="services" aria-labelledby="services-heading" className="section-padding">
+    <section id="services" aria-labelledby="services-heading" className="section-padding bg-bg-subtle">
       <div className="container-narrow">
         <AnimateIn>
           <SectionHeading
             titleId="services-heading"
-            eyebrow="Что мы делаем"
             title="Что мы разрабатываем для MAX"
             lead="Любые типы ботов и мини-приложений — от простых FAQ-помощников до сложных систем с AI и интеграцией в вашу инфраструктуру."
           />
         </AnimateIn>
 
-        <Stagger className="mt-12 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:gap-6">
+        <Stagger className="mt-8 sm:mt-12 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:gap-6">
           {services.map(({ icon: Icon, title, text }) => (
             <StaggerItem key={title}>
               <div className="card card-hover h-full p-6">
                 <div className="grid h-11 w-11 place-items-center rounded-[var(--radius-sm)] bg-accent-soft text-primary">
                   <Icon className="h-5 w-5" aria-hidden="true" />
                 </div>
-                <h3 className="mt-5 text-h3 font-semibold text-fg">{title}</h3>
+                <h3 className="mt-5 text-h3 font-semibold text-fg leading-tight">{title}</h3>
                 <p className="mt-2 text-body-sm text-fg-muted leading-relaxed">{text}</p>
               </div>
             </StaggerItem>

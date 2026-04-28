@@ -9,13 +9,13 @@ interface AnimateInProps extends Omit<HTMLMotionProps<"div">, "children"> {
   amount?: number;
 }
 
-export function AnimateIn({ children, delay = 0, amount = 0.2, ...rest }: AnimateInProps) {
+export function AnimateIn({ children, delay = 0, amount = 0, ...rest }: AnimateInProps) {
   const reduced = useReducedMotion();
   return (
     <motion.div
       initial={{ opacity: 0, y: reduced ? 0 : 16 }}
       whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true, margin: "-10% 0px", amount }}
+      viewport={{ once: true, margin: "0px 0px 100px 0px", amount }}
       transition={{ duration: 0.4, ease: "easeOut", delay }}
       {...rest}
     >
@@ -36,7 +36,7 @@ export function Stagger({ children, className, stagger = 0.08 }: StaggerProps) {
     <motion.div
       initial="hidden"
       whileInView="visible"
-      viewport={{ once: true, margin: "-10% 0px" }}
+      viewport={{ once: true, margin: "0px 0px 100px 0px", amount: 0 }}
       variants={{
         hidden: {},
         visible: { transition: { staggerChildren: reduced ? 0 : stagger } },

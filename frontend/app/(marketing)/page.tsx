@@ -1,5 +1,4 @@
 import { Header } from "@/components/layout/Header";
-import { StickyCTA } from "@/components/layout/StickyCTA";
 import { Hero } from "@/components/sections/Hero";
 import { WhyMax } from "@/components/sections/WhyMax";
 import { Services } from "@/components/sections/Services";
@@ -18,16 +17,15 @@ export default function HomePage() {
       <Header />
       <main id="main">
         <Hero />
-        <WhyMax />
         <Services />
         <Process />
-        <Tariffs />
         <WhyUs />
+        <Tariffs />
+        <WhyMax />
         <FAQ />
         <LeadForm />
       </main>
       <Footer />
-      <StickyCTA />
     </>
   );
 }

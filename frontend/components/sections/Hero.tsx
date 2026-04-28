@@ -31,7 +31,7 @@ export function Hero() {
   return (
     <section
       aria-labelledby="hero-heading"
-      className="relative overflow-hidden pt-[calc(var(--header-height)+48px)] pb-20 md:pt-[calc(var(--header-height)+72px)] md:pb-[120px]"
+      className="relative overflow-hidden pt-[calc(var(--header-height)+48px)] pb-12 md:pt-[calc(var(--header-height)+72px)] md:pb-[120px]"
     >
       <div
         className="absolute inset-x-0 top-0 -z-10 h-[600px] opacity-50"
@@ -71,8 +71,7 @@ export function Hero() {
             className="max-w-xl text-body-lg text-fg-muted text-pretty"
           >
             Разрабатываем чат-ботов, AI-ассистентов и мини-приложения внутри национального
-            мессенджера MAX. Под ключ — от технического задания до запуска и поддержки. Опыт
-            разработки систем — более 5 лет.
+            мессенджера MAX. Под ключ — от технического задания до запуска и поддержки.
           </motion.p>
 
           <motion.div
@@ -116,7 +115,7 @@ export function Hero() {
           </motion.dl>
         </motion.div>
 
-        <div className="relative flex items-center justify-center">
+        <div className="relative hidden items-center justify-center lg:flex">
           <PhoneMockup />
         </div>
       </div>

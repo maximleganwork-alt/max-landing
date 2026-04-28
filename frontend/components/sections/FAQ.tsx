@@ -14,14 +14,13 @@ export function FAQ() {
         <AnimateIn>
           <SectionHeading
             titleId="faq-heading"
-            eyebrow="FAQ"
             title="Частые вопросы"
             align="center"
           />
         </AnimateIn>
 
-        <AnimateIn delay={0.05} className="mt-12 mx-auto max-w-3xl">
-          <div className="rounded-[var(--radius-lg)] border border-border bg-bg-card px-2 sm:px-6">
+        <AnimateIn delay={0.05} className="mt-8 sm:mt-12 mx-auto max-w-3xl">
+          <div className="sm:rounded-[var(--radius-lg)] sm:border sm:border-border sm:bg-bg-card sm:px-6">
             <Accordion>
               {faqItems.map((item) => (
                 <AccordionItem key={item.q} question={item.q}>

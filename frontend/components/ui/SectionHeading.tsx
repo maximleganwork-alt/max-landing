@@ -34,7 +34,9 @@ export function SectionHeading({
       <h2 id={titleId} className="text-h1 font-bold text-fg text-balance">
         {title}
       </h2>
-      {lead ? <p className="text-body-lg text-fg-muted text-pretty">{lead}</p> : null}
+      {lead ? (
+        <p className="hidden sm:block text-body-lg text-fg-muted text-pretty">{lead}</p>
+      ) : null}
     </div>
   );
 }
