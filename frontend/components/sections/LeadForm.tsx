@@ -8,7 +8,6 @@ import { Mail, Clock, ArrowRight, MessageCircle, Send, Phone } from "lucide-reac
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Textarea } from "@/components/ui/Textarea";
-import { Checkbox } from "@/components/ui/Checkbox";
 import { SectionHeading } from "@/components/ui/SectionHeading";
 import { AnimateIn } from "@/components/ui/AnimateIn";
 import { useToast } from "@/components/ui/Toast";
@@ -35,7 +34,7 @@ export function LeadForm() {
       contact: "",
       message: "",
       tariff: "",
-      consent: undefined,
+      consent: true,
       captchaToken: "",
       website: "",
     },
@@ -148,7 +147,6 @@ export function LeadForm() {
                 autoComplete="tel"
                 {...register("contact")}
                 error={errors.contact?.message}
-                hint="Телефон в международном формате или ник в MAX/Telegram"
                 disabled={isSubmitting}
               />
 
@@ -195,34 +193,6 @@ export function LeadForm() {
 
               <input type="hidden" {...register("captchaToken")} />
 
-              <Checkbox
-                {...register("consent")}
-                label={
-                  <>
-                    Я согласен на обработку персональных данных в соответствии с{" "}
-                    <Link
-                      href="/privacy"
-                      target="_blank"
-                      rel="noopener"
-                      className="text-primary underline-offset-2 hover:underline"
-                    >
-                      Политикой конфиденциальности
-                    </Link>{" "}
-                    и{" "}
-                    <Link
-                      href="/consent"
-                      target="_blank"
-                      rel="noopener"
-                      className="text-primary underline-offset-2 hover:underline"
-                    >
-                      Согласием на обработку ПДн
-                    </Link>
-                  </>
-                }
-                error={errors.consent?.message}
-                disabled={isSubmitting}
-              />
-
               <SmartCaptcha ref={captchaRef} />
 
               <Button
@@ -236,6 +206,28 @@ export function LeadForm() {
               >
                 Отправить заявку
               </Button>
+
+              <p className="text-caption text-fg-subtle">
+                Отправляя заявку, вы соглашаетесь с{" "}
+                <Link
+                  href="/privacy"
+                  target="_blank"
+                  rel="noopener"
+                  className="text-primary underline-offset-2 hover:underline"
+                >
+                  Политикой конфиденциальности
+                </Link>{" "}
+                и{" "}
+                <Link
+                  href="/consent"
+                  target="_blank"
+                  rel="noopener"
+                  className="text-primary underline-offset-2 hover:underline"
+                >
+                  обработкой ПДн
+                </Link>
+                .
+              </p>
             </form>
           </AnimateIn>
 
