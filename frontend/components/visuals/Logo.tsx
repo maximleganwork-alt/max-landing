@@ -1,0 +1,55 @@
+import { cn } from "@/lib/utils";
+
+interface LogoProps {
+  className?: string;
+  size?: number;
+  showText?: boolean;
+  textClassName?: string;
+}
+
+export function Logo({ className, size = 32, showText = true, textClassName }: LogoProps) {
+  return (
+    <span className={cn("inline-flex items-center gap-2", className)}>
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 32 32"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-hidden="true"
+        className="shrink-0"
+      >
+        <path
+          d="M9 21.5C5.13401 21.5 2 18.366 2 14.5C2 10.634 5.13401 7.5 9 7.5C9.55649 7.5 10.0987 7.56507 10.6195 7.6886C11.7949 5.49736 14.1078 4 16.7727 4C20.6387 4 23.7727 7.13401 23.7727 11C23.7727 11.1746 23.7663 11.3477 23.7536 11.5191C23.8351 11.5066 23.9183 11.5 24.0027 11.5C27.5944 11.5 30.5 14.4056 30.5 17.9973C30.5 21.5891 27.5944 24.5 24.0027 24.5L9 24.5C8.86079 24.5 8.72281 24.4972 8.58607 24.4917L8.5 24.4882V21.5H9Z"
+          fill="url(#botmaxLogoGradient)"
+        />
+        <circle cx="13" cy="16" r="1.5" fill="white" />
+        <circle cx="18" cy="16" r="1.5" fill="white" />
+        <circle cx="23" cy="16" r="1.5" fill="white" />
+        <defs>
+          <linearGradient
+            id="botmaxLogoGradient"
+            x1="0"
+            y1="0"
+            x2="32"
+            y2="32"
+            gradientUnits="userSpaceOnUse"
+          >
+            <stop offset="0%" stopColor="#5B8DFF" />
+            <stop offset="100%" stopColor="#8B5CF6" />
+          </linearGradient>
+        </defs>
+      </svg>
+      {showText ? (
+        <span
+          className={cn(
+            "font-semibold tracking-tight text-fg text-body-lg",
+            textClassName,
+          )}
+        >
+          BotMax
+        </span>
+      ) : null}
+    </span>
+  );
+}
