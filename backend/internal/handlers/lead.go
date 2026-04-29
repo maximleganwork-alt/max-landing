@@ -18,9 +18,10 @@ import (
 )
 
 type LeadHandler struct {
-	Limiter  *ratelimit.Limiter
-	Captcha  *captcha.Verifier
-	Telegram *telegram.Client
+	Limiter   *ratelimit.Limiter
+	Captcha   *captcha.Verifier
+	Telegram  *telegram.Client
+	ThreadIDs map[string]int
 }
 
 func (h *LeadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -67,13 +68,14 @@ func (h *LeadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userAgent := r.Header.Get("X-User-Agent")
-	if userAgent == "" {
-		userAgent = r.Header.Get("User-Agent")
-	}
-
-	text := formatTelegramMessage(lead, ip, userAgent)
-	if err := h.Telegram.Send(ctx, text); err != nil {
+	// TODO(242-ФЗ): сейчас лид уходит сразу в Telegram (серверы за пределами РФ),
+	// первичной локализации в БД на территории Российской Федерации нет.
+	// Перед production-запуском добавить запись в локальное хранилище
+	// (PostgreSQL/SQLite на VPS в РФ) ДО отправки в Telegram. Telegram должен
+	// остаться каналом уведомлений, а не единственным хранилищем ПДн.
+	text := formatTelegramMessage(lead)
+	threadID := h.ThreadIDs[lead.Source]
+	if err := h.Telegram.Send(ctx, text, threadID); err != nil {
 		log.Printf("[lead] telegram send failed ip=%s err=%v\nMessage:\n%s", ip, err, text)
 		if !errors.Is(err, telegram.ErrNotConfigured) {
 			writeError(w, http.StatusInternalServerError, "internal")
@@ -123,18 +125,45 @@ func escapeMarkdown(s string) string {
 	return replacer.Replace(s)
 }
 
-func formatTelegramMessage(lead validation.Lead, ip, userAgent string) string {
-	var b strings.Builder
-	b.WriteString("*🆕 Новая заявка с лендинга*\n\n")
-	fmt.Fprintf(&b, "*Имя:* %s\n", escapeMarkdown(lead.Name))
-	fmt.Fprintf(&b, "*Контакт:* %s\n", escapeMarkdown(lead.Contact))
+func sourceTag(source string) string {
+	switch source {
+	case "max":
+		return "🟣 MAX"
+	case "tg":
+		return "🔵 TG"
+	case "web":
+		return "🟢 WEB"
+	default:
+		return ""
+	}
+}
 
-	if label := validation.TariffLabel(lead.Tariff); label != "" {
-		fmt.Fprintf(&b, "*Тариф:* %s\n", label)
+func formatTelegramMessage(lead validation.Lead) string {
+	var b strings.Builder
+
+	if tag := sourceTag(lead.Source); tag != "" {
+		fmt.Fprintf(&b, "%s · *Новая заявка*\n\n", tag)
+	} else {
+		b.WriteString("*🆕 Новая заявка*\n\n")
+	}
+
+	fmt.Fprintf(&b, "👤 *Имя:* %s\n", escapeMarkdown(lead.Name))
+	fmt.Fprintf(&b, "📱 *Контакт:* %s\n", escapeMarkdown(lead.Contact))
+
+	label := lead.TariffLabel
+	if label == "" {
+		label = validation.TariffLabel(lead.Tariff)
+	}
+	if label != "" {
+		fmt.Fprintf(&b, "💼 *Тариф:* %s\n", escapeMarkdown(label))
+	}
+
+	if lead.Service != "" {
+		fmt.Fprintf(&b, "🛠 *Услуга:* %s\n", escapeMarkdown(lead.Service))
 	}
 
 	if lead.Message != "" {
-		b.WriteString("\n*Задача:*\n")
+		b.WriteString("\n📝 *Задача:*\n")
 		b.WriteString(escapeMarkdown(lead.Message))
 		b.WriteString("\n")
 	}
@@ -156,16 +185,8 @@ func formatTelegramMessage(lead validation.Lead, ip, userAgent string) string {
 		utmParts = append(utmParts, "term="+lead.UTMTerm)
 	}
 	if len(utmParts) > 0 {
-		fmt.Fprintf(&b, "\n*UTM:* %s\n", escapeMarkdown(strings.Join(utmParts, " · ")))
+		fmt.Fprintf(&b, "\n🔗 *UTM:* %s\n", escapeMarkdown(strings.Join(utmParts, " · ")))
 	}
 
-	fmt.Fprintf(&b, "\n_IP: %s · UA: %s_", escapeMarkdown(ip), escapeMarkdown(truncate(userAgent, 80)))
 	return b.String()
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }

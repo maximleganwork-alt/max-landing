@@ -1,0 +1,216 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #ffffff;
+  --bg-subtle: #f3f0fa;
+  --bg-card: #ffffff;
+  --bg-elevated: #ffffff;
+
+  --fg: #0b1220;
+  --fg-muted: #475569;
+  --fg-subtle: #64748b;
+
+  --border: #e6ebf2;
+  --border-strong: #d4dbe5;
+
+  --primary: #5947e5;
+  --primary-hover: #4536c7;
+  --primary-fg: #ffffff;
+
+  --accent: #8b7bff;
+  --accent-soft: #efecff;
+
+  --success: #10b981;
+  --error: #ef4444;
+  --warning: #f59e0b;
+
+  --ring: #5947e5;
+
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+
+  --brand-grad-from: #5b8dff;
+  --brand-grad-to: #8b5cf6;
+  --gradient-brand: linear-gradient(135deg, var(--brand-grad-from) 0%, var(--brand-grad-to) 100%);
+
+  --header-height: 64px;
+}
+
+@media (min-width: 640px) {
+  :root {
+    --header-height: 72px;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: var(--header-height);
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-bg text-fg font-sans antialiased;
+    font-feature-settings: "ss01", "cv11";
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: var(--primary);
+    color: var(--primary-fg);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  button:focus,
+  a:focus,
+  input:focus,
+  textarea:focus {
+    outline: none;
+  }
+
+  button:focus-visible,
+  a:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .container-narrow {
+    @apply container max-w-[1200px];
+  }
+
+  .section-padding {
+    @apply py-10 md:py-20;
+  }
+
+  /* Диагональный «срез» сверху и снизу секции — фон через ::before, контент остаётся ровным.
+     На мобиле срезы отключены: блок прямоугольный, чтобы границы между секциями были ровными. */
+  .section-diagonal-bg {
+    position: relative;
+    z-index: 0;
+  }
+  .section-diagonal-bg::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--bg-subtle);
+    z-index: -1;
+  }
+  @media (min-width: 768px) {
+    .section-diagonal-bg::before {
+      clip-path: polygon(
+        0 40px,
+        100% 0,
+        100% calc(100% - 40px),
+        0 100%
+      );
+    }
+  }
+
+  /* Лид-форма: другой цвет, диагональный срез только сверху на десктопе. */
+  .section-leadform-bg {
+    position: relative;
+    z-index: 0;
+  }
+  .section-leadform-bg::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: #ece5f7;
+    z-index: -1;
+  }
+  @media (min-width: 768px) {
+    .section-leadform-bg::before {
+      clip-path: polygon(0 40px, 100% 0, 100% 100%, 0 100%);
+    }
+  }
+
+  .glass-header {
+    background-color: color-mix(in srgb, var(--bg) 85%, transparent);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  .card {
+    @apply bg-bg-card border border-border rounded-[var(--radius)];
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    transition: border-color 200ms ease, transform 200ms ease;
+  }
+
+  .card-hover:hover {
+    transform: translateY(-2px);
+    border-color: var(--border-strong);
+  }
+
+  .gradient-border {
+    position: relative;
+    background-clip: padding-box;
+    border: 1px solid transparent;
+  }
+
+  .gradient-border::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    margin: -1px;
+    border-radius: inherit;
+    background: var(--gradient-brand);
+  }
+
+  .skip-link {
+    position: absolute;
+    top: -64px;
+    left: 16px;
+    padding: 12px 20px;
+    background-color: var(--primary);
+    color: var(--primary-fg);
+    border-radius: var(--radius-sm);
+    font-weight: 500;
+    z-index: 100;
+    transition: top 150ms ease;
+  }
+
+  .skip-link:focus {
+    top: 16px;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .text-pretty {
+    text-wrap: pretty;
+  }
+
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

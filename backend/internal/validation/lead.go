@@ -17,6 +17,9 @@ type Lead struct {
 	Contact      string `json:"contact"`
 	Message      string `json:"message,omitempty"`
 	Tariff       string `json:"tariff,omitempty"`
+	TariffLabel  string `json:"tariff_label,omitempty"`
+	Source       string `json:"source"`
+	Service      string `json:"service,omitempty"`
 	CaptchaToken string `json:"captchaToken"`
 	Website      string `json:"website,omitempty"`
 	UTMSource    string `json:"utm_source,omitempty"`
@@ -30,7 +33,10 @@ var (
 	ErrNameInvalid    = errors.New("name_invalid")
 	ErrContactInvalid = errors.New("contact_invalid")
 	ErrMessageTooLong = errors.New("message_too_long")
-	ErrTariffInvalid  = errors.New("tariff_invalid")
+	ErrTariffInvalid     = errors.New("tariff_invalid")
+	ErrTariffLabelTooLong = errors.New("tariff_label_too_long")
+	ErrSourceInvalid     = errors.New("source_invalid")
+	ErrServiceTooLong    = errors.New("service_too_long")
 	ErrCaptchaMissing = errors.New("captcha_missing")
 )
 
@@ -41,11 +47,20 @@ var allowedTariffs = map[string]struct{}{
 	"enterprise": {},
 }
 
+var allowedSources = map[string]struct{}{
+	"max": {},
+	"tg":  {},
+	"web": {},
+}
+
 func (l *Lead) Normalize() {
 	l.Name = strings.TrimSpace(l.Name)
 	l.Contact = strings.TrimSpace(l.Contact)
 	l.Message = strings.TrimSpace(l.Message)
 	l.Tariff = strings.TrimSpace(l.Tariff)
+	l.TariffLabel = strings.TrimSpace(l.TariffLabel)
+	l.Source = strings.ToLower(strings.TrimSpace(l.Source))
+	l.Service = strings.TrimSpace(l.Service)
 }
 
 func (l *Lead) Validate() error {
@@ -61,6 +76,15 @@ func (l *Lead) Validate() error {
 	}
 	if _, ok := allowedTariffs[l.Tariff]; !ok {
 		return ErrTariffInvalid
+	}
+	if utf8.RuneCountInString(l.TariffLabel) > 50 {
+		return ErrTariffLabelTooLong
+	}
+	if _, ok := allowedSources[l.Source]; !ok {
+		return ErrSourceInvalid
+	}
+	if utf8.RuneCountInString(l.Service) > 50 {
+		return ErrServiceTooLong
 	}
 	if strings.TrimSpace(l.CaptchaToken) == "" {
 		return ErrCaptchaMissing

@@ -1,0 +1,8 @@
+{
+  "name": "botmax-monorepo",
+  "private": true,
+  "workspaces": [
+    "frontend-*",
+    "shared"
+  ]
+}
