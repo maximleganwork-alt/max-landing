@@ -1,0 +1,131 @@
+# Production compose file. Run from repo root: `docker compose up -d --build`.
+#
+# Topology
+# --------
+#   ┌──────────────── host ─────────────────┐
+#   │  nginx (host pkg, :80/:443)           │
+#   │     ├─ max.<domain> → 127.0.0.1:3001  │
+#   │     ├─ tg.<domain>  → 127.0.0.1:3002  │
+#   │     └─ web.<domain> → 127.0.0.1:3003  │
+#   │                                       │
+#   │  ┌──── docker network: botmax ─────┐  │
+#   │  │  frontend-max  :3000  ──────────┼──┼─→ 127.0.0.1:3001
+#   │  │  frontend-tg   :3000  ──────────┼──┼─→ 127.0.0.1:3002
+#   │  │  frontend-web  :3000  ──────────┼──┼─→ 127.0.0.1:3003
+#   │  │  backend       :8080  (internal only — frontends call http://backend:8080)
+#   │  └─────────────────────────────────┘  │
+#   └───────────────────────────────────────┘
+#
+# Host port bindings stay on 127.0.0.1 — the only public surface is nginx.
+#
+# Build args vs env vars
+# ----------------------
+# NEXT_PUBLIC_* go into `args:` because Next inlines them at build time. Pure
+# server-runtime config (BACKEND_URL, TELEGRAM_*, ALLOWED_ORIGINS) goes via
+# env_file/environment.
+
+name: botmax
+
+x-restart-policy: &restart unless-stopped
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: botmax/backend:latest
+    container_name: botmax-backend
+    restart: *restart
+    logging: *logging
+    env_file: .env
+    environment:
+      PORT: "8080"
+    networks:
+      - botmax
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend-max:
+    build:
+      context: .
+      dockerfile: frontend-max/Dockerfile
+      args:
+        NEXT_PUBLIC_SITE_URL: ${SITE_URL_MAX}
+        NEXT_PUBLIC_YANDEX_METRIKA_ID: ${NEXT_PUBLIC_YANDEX_METRIKA_ID:-}
+        NEXT_PUBLIC_YANDEX_VERIFICATION: ${NEXT_PUBLIC_YANDEX_VERIFICATION:-}
+        NEXT_PUBLIC_GOOGLE_VERIFICATION: ${NEXT_PUBLIC_GOOGLE_VERIFICATION:-}
+        NEXT_PUBLIC_SMARTCAPTCHA_CLIENT_KEY: ${NEXT_PUBLIC_SMARTCAPTCHA_CLIENT_KEY:-}
+    image: botmax/frontend-max:latest
+    container_name: botmax-frontend-max
+    restart: *restart
+    logging: *logging
+    environment:
+      BACKEND_URL: http://backend:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3001:3000"
+    networks:
+      - botmax
+
+  frontend-tg:
+    build:
+      context: .
+      dockerfile: frontend-tg/Dockerfile
+      args:
+        NEXT_PUBLIC_SITE_URL: ${SITE_URL_TG}
+        NEXT_PUBLIC_YANDEX_METRIKA_ID: ${NEXT_PUBLIC_YANDEX_METRIKA_ID:-}
+        NEXT_PUBLIC_YANDEX_VERIFICATION: ${NEXT_PUBLIC_YANDEX_VERIFICATION:-}
+        NEXT_PUBLIC_GOOGLE_VERIFICATION: ${NEXT_PUBLIC_GOOGLE_VERIFICATION:-}
+        NEXT_PUBLIC_SMARTCAPTCHA_CLIENT_KEY: ${NEXT_PUBLIC_SMARTCAPTCHA_CLIENT_KEY:-}
+    image: botmax/frontend-tg:latest
+    container_name: botmax-frontend-tg
+    restart: *restart
+    logging: *logging
+    environment:
+      BACKEND_URL: http://backend:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3002:3000"
+    networks:
+      - botmax
+
+  frontend-web:
+    build:
+      context: .
+      dockerfile: frontend-web/Dockerfile
+      args:
+        NEXT_PUBLIC_SITE_URL: ${SITE_URL_WEB}
+        NEXT_PUBLIC_YANDEX_METRIKA_ID: ${NEXT_PUBLIC_YANDEX_METRIKA_ID:-}
+        NEXT_PUBLIC_YANDEX_VERIFICATION: ${NEXT_PUBLIC_YANDEX_VERIFICATION:-}
+        NEXT_PUBLIC_GOOGLE_VERIFICATION: ${NEXT_PUBLIC_GOOGLE_VERIFICATION:-}
+        NEXT_PUBLIC_SMARTCAPTCHA_CLIENT_KEY: ${NEXT_PUBLIC_SMARTCAPTCHA_CLIENT_KEY:-}
+    image: botmax/frontend-web:latest
+    container_name: botmax-frontend-web
+    restart: *restart
+    logging: *logging
+    environment:
+      BACKEND_URL: http://backend:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3003:3000"
+    networks:
+      - botmax
+
+networks:
+  botmax:
+    driver: bridge

@@ -34,7 +34,7 @@
   --radius-xl: 24px;
 
   --brand-grad-from: #34d399;
-  --brand-grad-to: #047857;
+  --brand-grad-to: #059669;
   --gradient-brand: linear-gradient(135deg, var(--brand-grad-from) 0%, var(--brand-grad-to) 100%);
 
   --header-height: 64px;

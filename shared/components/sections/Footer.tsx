@@ -19,6 +19,8 @@ export function Footer({
 }: FooterContent) {
   return (
     <footer
+      role="contentinfo"
+      aria-label="Подвал сайта"
       className="border-t border-border"
       style={{ backgroundColor: "#0d1424", color: "#e6ebf2" }}
     >
@@ -27,21 +29,25 @@ export function Footer({
           <div className="flex flex-col gap-4">
             <Logo textClassName="!text-white" />
             <p className="text-body-sm text-slate-400 leading-relaxed">{description}</p>
-            <div className="flex items-center gap-2">
+            <ul className="flex items-center gap-2 list-none p-0 m-0">
               {social.map((s) => {
                 const Icon = s.kind === "telegram" ? Send : MessageCircle;
+                const isExternal = /^https?:\/\//.test(s.href);
                 return (
-                  <a
-                    key={s.label}
-                    href={s.href}
-                    aria-label={s.label}
-                    className="grid h-10 w-10 place-items-center rounded-full border border-white/10 text-slate-300 hover:border-white/30 hover:text-white transition-colors"
-                  >
-                    <Icon className="h-4 w-4" />
-                  </a>
+                  <li key={s.label}>
+                    <a
+                      href={s.href}
+                      aria-label={s.label}
+                      rel={isExternal ? "me noopener noreferrer" : undefined}
+                      target={isExternal ? "_blank" : undefined}
+                      className="grid h-10 w-10 place-items-center rounded-full border border-white/10 text-slate-300 hover:border-white/30 hover:text-white transition-colors"
+                    >
+                      <Icon className="h-4 w-4" aria-hidden="true" />
+                    </a>
+                  </li>
                 );
               })}
-            </div>
+            </ul>
           </div>
 
           <div>

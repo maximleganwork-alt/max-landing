@@ -26,18 +26,18 @@ export function Tariffs({ title, lead, plans, footnote }: TariffsContent) {
           <SectionHeading titleId="tariffs-heading" title={title} lead={lead} />
         </AnimateIn>
 
-        <Stagger className="mt-8 sm:mt-12 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <Stagger className="mt-8 sm:mt-12 grid grid-cols-1 gap-6 md:grid-cols-3">
           {plans.map((t) => (
             <StaggerItem
               key={t.id}
-              className={cn("h-full", t.popular && "md:col-span-2 lg:col-span-1")}
+              className="h-full"
             >
               <div
                 className={cn(
                   "relative h-full flex flex-col gap-6 rounded-[var(--radius-lg)] border bg-bg-card p-6 lg:p-8",
                   "transition-colors duration-200",
                   t.popular
-                    ? "border-transparent ring-2 ring-primary/30"
+                    ? "border-transparent shadow-[0_0_0_2px_color-mix(in_srgb,var(--primary)_30%,transparent)]"
                     : "border-border hover:border-border-strong",
                 )}
                 style={

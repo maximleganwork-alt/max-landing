@@ -63,28 +63,21 @@ export function Hero({
           }}
           className="flex flex-col gap-6"
         >
-          <motion.h1
+          {/* h1 + description are above-the-fold and the LCP element — keep
+              them visible at first paint to avoid a 300–500ms LCP penalty.
+              We still animate later children for the visual stagger. */}
+          <h1
             id="hero-heading"
-            variants={{
-              hidden: { opacity: 0, y: reduced ? 0 : 16 },
-              visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: "easeOut" } },
-            }}
             className="text-display font-bold text-fg text-balance"
           >
             {heading.before}
             <span className="text-primary">{heading.brand}</span>
             {heading.after}
-          </motion.h1>
+          </h1>
 
-          <motion.p
-            variants={{
-              hidden: { opacity: 0, y: reduced ? 0 : 16 },
-              visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } },
-            }}
-            className="max-w-xl text-body-lg text-fg-muted text-pretty"
-          >
+          <p className="max-w-xl text-body-lg text-fg-muted text-pretty">
             {description}
-          </motion.p>
+          </p>
 
           <motion.div
             variants={{

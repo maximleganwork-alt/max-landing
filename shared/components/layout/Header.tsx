@@ -38,10 +38,14 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
       <div className="container-narrow flex h-16 items-center justify-between gap-4 sm:h-[72px]">
         {/* логотип */}
         <a
-          href="#"
+          href="/"
           onClick={(e) => {
-            e.preventDefault();
-            window.scrollTo({ top: 0, behavior: "smooth" });
+            // On the home page we keep the smooth-scroll affordance; deep pages
+            // fall through and navigate normally so crawlers see a real link.
+            if (window.location.pathname === "/") {
+              e.preventDefault();
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }
           }}
           className={cn(
             "rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg",

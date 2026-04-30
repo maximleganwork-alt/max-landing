@@ -1,9 +1,23 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   compress: true,
+  // Bundle the shared workspace into a self-contained server. Required for
+  // `output: "standalone"` to copy shared code into the deploy artifact.
   transpilePackages: ["shared"],
+  // Build a self-contained `.next/standalone/` directory that the Dockerfile
+  // can copy as-is — no `node_modules/` shipped to the runtime image.
+  output: "standalone",
+  // Without this, Next would only trace inside frontend-max/ and miss the
+  // symlinked `shared` workspace package — runtime would crash with
+  // "Cannot find module 'shared/...'".
+  outputFileTracingRoot: path.join(__dirname, ".."),
   images: {
     formats: ["image/avif", "image/webp"],
   },

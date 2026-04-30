@@ -1,0 +1,44 @@
+# Keep build context small — without this, Docker uploads .next/ + node_modules/
+# (~1 GB) on every `docker build` even though they're rebuilt inside the image.
+
+**/.next/
+**/node_modules/
+**/dist/
+**/build/
+**/out/
+**/.cache/
+
+# Local-only files
+**/.env
+**/.env.local
+**/.env.*.local
+**/.DS_Store
+**/Thumbs.db
+**/.vscode/
+**/.idea/
+**/*.swp
+**/*.swo
+**/*.tsbuildinfo
+
+# Git + IDE state
+.git/
+.github/
+.claude/
+
+# Backend artifacts (rebuilt in backend/Dockerfile)
+backend/bin/
+backend/server
+backend/server.exe
+
+# Logs
+**/*.log
+
+# Docs and meta — irrelevant to the runtime image
+*.md
+!shared/**/README.md
+NEED.MD
+TZ-Landing-MAX-Bots.md
+PLAN-MULTI-SITE.md
+
+# Deploy artifacts (we don't need to ship these into images)
+deploy/

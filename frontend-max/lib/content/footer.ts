@@ -22,12 +22,12 @@ export const footerContent: FooterContent = {
   docs: [
     { label: "Политика конфиденциальности", href: "/privacy" },
     { label: "Согласие на обработку ПДн", href: "/consent" },
-    { label: "Договор-оферта", href: "#" },
+    { label: "Договор-оферта", href: "/offer" },
   ],
   social: [
     { label: "Написать в MAX", href: "#", kind: "max" },
     { label: "Написать в Telegram", href: "#", kind: "telegram" },
   ],
   copyright: "© 2026 BotMax. Все права защищены.",
-  legalAddress: "ИП Иванов Иван Иванович, ИНН 123456789012, ОГРНИП 123456789012345",
+  legalAddress: "ИП Леган Максим Артёмович, ИНН 910231127118, ОГРНИП 326911200028942",
 };

@@ -3,9 +3,9 @@ import { Inter } from "next/font/google";
 import { Providers } from "shared/components/Providers";
 import { YandexMetrika } from "shared/components/analytics/YandexMetrika";
 import { CookieBanner } from "shared/components/analytics/CookieBanner";
+import { buildSiteMetadata, buildSiteViewport } from "shared/lib/site-meta";
+import { siteConfig } from "@/lib/site";
 import "./globals.css";
-
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://example.ru";
 
 const inter = Inter({
   subsets: ["latin", "cyrillic"],
@@ -14,80 +14,20 @@ const inter = Inter({
   preload: true,
 });
 
-export const metadata: Metadata = {
-  metadataBase: new URL(SITE_URL),
-  title: {
-    default: "Разработка ботов для MAX под ключ — AI, мини-приложения, интеграции | BotMax",
-    template: "%s | BotMax",
-  },
-  description:
-    "Разрабатываем чат-ботов, AI-ассистентов и мини-приложения для мессенджера MAX. Опыт 5+ лет, 50+ проектов, гарантия. Оценка и ТЗ — бесплатно. Цены от 15 000 ₽.",
-  applicationName: "BotMax",
-  authors: [{ name: "BotMax" }],
-  keywords: [
-    "разработка ботов для MAX",
-    "разработка чат-ботов MAX",
-    "бот для MAX мессенджера",
-    "заказать бота для MAX",
-    "AI бот MAX",
-    "мини-приложение MAX",
-    "интеграция MAX с CRM",
-    "чат-бот для бизнеса MAX",
-  ],
-  alternates: {
-    canonical: "/",
-  },
-  formatDetection: {
-    telephone: false,
-  },
-  openGraph: {
-    type: "website",
-    locale: "ru_RU",
-    url: SITE_URL,
-    siteName: "BotMax",
-    title: "Разработка ботов для MAX под ключ",
-    description:
-      "Чат-боты, AI и мини-приложения внутри MAX. Опыт 5+ лет, гарантия 30 дней.",
-    images: [
-      {
-        url: "/og-image.png",
-        width: 1200,
-        height: 630,
-        alt: "Разработка ботов для MAX",
-      },
-    ],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Разработка ботов для MAX под ключ",
-    description: "Чат-боты, AI и мини-приложения внутри MAX. Опыт 5+ лет, гарантия 30 дней.",
-    images: ["/og-image.png"],
-  },
-  robots: {
-    index: true,
-    follow: true,
-    "max-image-preview": "large",
-  },
-  icons: {
-    icon: [
-      { url: "/favicon.ico" },
-      { url: "/icon.svg", type: "image/svg+xml" },
-    ],
-    apple: "/apple-touch-icon.png",
-  },
-};
+export const metadata: Metadata = buildSiteMetadata({ config: siteConfig });
 
-export const viewport: Viewport = {
-  width: "device-width",
-  initialScale: 1,
-  maximumScale: 5,
-  viewportFit: "cover",
-  themeColor: "#ffffff",
-};
+export const viewport: Viewport = buildSiteViewport(siteConfig);
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ru" className={inter.variable}>
+    <html lang="ru-RU" className={inter.variable}>
+      <head>
+        {/* Performance hints — opening connections to third-parties before consent fires. */}
+        <link rel="preconnect" href="https://mc.yandex.ru" crossOrigin="" />
+        <link rel="dns-prefetch" href="https://mc.yandex.ru" />
+        <link rel="preconnect" href="https://smartcaptcha.yandexcloud.net" crossOrigin="" />
+        <link rel="dns-prefetch" href="https://smartcaptcha.yandexcloud.net" />
+      </head>
       <body>
         <a href="#main" className="skip-link">
           Перейти к контенту

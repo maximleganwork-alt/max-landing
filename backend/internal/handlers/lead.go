@@ -18,10 +18,9 @@ import (
 )
 
 type LeadHandler struct {
-	Limiter   *ratelimit.Limiter
-	Captcha   *captcha.Verifier
-	Telegram  *telegram.Client
-	ThreadIDs map[string]int
+	Limiter  *ratelimit.Limiter
+	Captcha  *captcha.Verifier
+	Telegram *telegram.Client
 }
 
 func (h *LeadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -74,8 +73,7 @@ func (h *LeadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// (PostgreSQL/SQLite на VPS в РФ) ДО отправки в Telegram. Telegram должен
 	// остаться каналом уведомлений, а не единственным хранилищем ПДн.
 	text := formatTelegramMessage(lead)
-	threadID := h.ThreadIDs[lead.Source]
-	if err := h.Telegram.Send(ctx, text, threadID); err != nil {
+	if err := h.Telegram.Send(ctx, text); err != nil {
 		log.Printf("[lead] telegram send failed ip=%s err=%v\nMessage:\n%s", ip, err, text)
 		if !errors.Is(err, telegram.ErrNotConfigured) {
 			writeError(w, http.StatusInternalServerError, "internal")

@@ -10,13 +10,20 @@ import { siteConfig } from "@/lib/site";
 import { PrivacyPolicy } from "shared/components/legal/PrivacyPolicy";
 import { legalEntity } from "shared/lib/legal-entity";
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://example.ru";
-
 export const metadata: Metadata = {
   title: "Политика конфиденциальности",
   description:
     "Политика обработки персональных данных в соответствии с 152-ФЗ. Состав собираемых данных, цели и сроки обработки.",
   alternates: { canonical: "/privacy" },
+  openGraph: {
+    type: "article",
+    title: "Политика конфиденциальности",
+    description:
+      "Политика обработки персональных данных в соответствии с 152-ФЗ.",
+    url: "/privacy",
+    images: ["/opengraph-image"],
+  },
+  robots: { index: true, follow: true },
 };
 
 export default function PrivacyPage() {
@@ -24,15 +31,18 @@ export default function PrivacyPage() {
     <>
       <JsonLd
         variant="legal"
+        legalDocumentType="PrivacyPolicy"
         site={{
           brand: legalEntity.brand,
-          siteUrl: SITE_URL,
+          legalName: legalEntity.legalName,
+          siteUrl: siteConfig.siteUrl,
           description: siteConfig.metaDescription,
           contactEmail: legalEntity.contactEmail,
+          sameAs: siteConfig.sameAs,
         }}
         breadcrumbs={[
-          { name: "Главная", url: `${SITE_URL}/` },
-          { name: "Политика конфиденциальности", url: `${SITE_URL}/privacy` },
+          { name: "Главная", url: `${siteConfig.siteUrl}/` },
+          { name: "Политика конфиденциальности", url: `${siteConfig.siteUrl}/privacy` },
         ]}
       />
       <Header {...headerContent} />

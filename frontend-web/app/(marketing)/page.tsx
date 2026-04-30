@@ -4,8 +4,6 @@ import { siteConfig } from "@/lib/site";
 import { siteContents } from "@/lib/content";
 import { MarketingClient } from "./MarketingClient";
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://example.ru";
-
 const services: JsonLdServiceEntry[] = siteContents.tariffs.plans.map((p) => ({
   name: p.title,
   description: p.subtitle,
@@ -20,12 +18,16 @@ export default function HomePage() {
         variant="home"
         site={{
           brand: legalEntity.brand,
-          siteUrl: SITE_URL,
+          legalName: legalEntity.legalName,
+          siteUrl: siteConfig.siteUrl,
           description: siteConfig.metaDescription,
           contactEmail: legalEntity.contactEmail,
+          sameAs: siteConfig.sameAs,
         }}
         services={services}
         faqItems={siteContents.faq.items}
+        pageName={siteConfig.ogTitle}
+        pageDescription={siteConfig.ogDescription}
       />
       <MarketingClient />
     </>

@@ -1,5 +1,12 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Logo } from "shared/components/visuals/Logo";
+
+export const metadata: Metadata = {
+  title: "Страница не найдена",
+  description: "Запрошенная страница не существует или была перемещена.",
+  robots: { index: false, follow: false },
+};
 
 export default function NotFound() {
   return (

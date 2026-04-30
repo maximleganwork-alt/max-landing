@@ -10,13 +10,20 @@ import { siteConfig } from "@/lib/site";
 import { Consent } from "shared/components/legal/Consent";
 import { legalEntity } from "shared/lib/legal-entity";
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://example.ru";
-
 export const metadata: Metadata = {
   title: "Согласие на обработку персональных данных",
   description:
     "Согласие пользователя на обработку персональных данных в соответствии с 152-ФЗ.",
   alternates: { canonical: "/consent" },
+  openGraph: {
+    type: "article",
+    title: "Согласие на обработку персональных данных",
+    description:
+      "Согласие пользователя на обработку персональных данных в соответствии с 152-ФЗ.",
+    url: "/consent",
+    images: ["/opengraph-image"],
+  },
+  robots: { index: true, follow: true },
 };
 
 export default function ConsentPage() {
@@ -24,15 +31,18 @@ export default function ConsentPage() {
     <>
       <JsonLd
         variant="legal"
+        legalDocumentType="DigitalDocument"
         site={{
           brand: legalEntity.brand,
-          siteUrl: SITE_URL,
+          legalName: legalEntity.legalName,
+          siteUrl: siteConfig.siteUrl,
           description: siteConfig.metaDescription,
           contactEmail: legalEntity.contactEmail,
+          sameAs: siteConfig.sameAs,
         }}
         breadcrumbs={[
-          { name: "Главная", url: `${SITE_URL}/` },
-          { name: "Согласие на обработку ПДн", url: `${SITE_URL}/consent` },
+          { name: "Главная", url: `${siteConfig.siteUrl}/` },
+          { name: "Согласие на обработку ПДн", url: `${siteConfig.siteUrl}/consent` },
         ]}
       />
       <Header {...headerContent} />

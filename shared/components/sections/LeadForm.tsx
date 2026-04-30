@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Clock } from "lucide-react";
 import { Button } from "../ui/Button";
 import { Checkbox } from "../ui/Checkbox";
 import { Input } from "../ui/Input";
@@ -164,7 +164,8 @@ export function LeadForm({
 
               <Textarea
                 label="Кратко о задаче"
-                placeholder="Опишите, что нужно сделать — мы изучим и подготовим оценку"
+                placeholder="Например, интеграция с amoCRM"
+                hint="Поле необязательное — можно оставить пустым"
                 rows={3}
                 {...register("message")}
                 error={errors.message?.message}
@@ -287,6 +288,13 @@ export function LeadForm({
                     </a>
                   );
                 })}
+              </div>
+
+              <div className="mt-auto flex items-center gap-2 border-t border-border pt-4 text-body-sm text-fg-muted">
+                <Clock className="h-4 w-4 shrink-0 text-fg-subtle" aria-hidden="true" />
+                <span>
+                  Время работы: <span className="font-medium text-fg">с 9:00 до 21:00</span>
+                </span>
               </div>
             </div>
           </AnimateIn>

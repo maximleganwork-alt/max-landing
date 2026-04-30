@@ -29,10 +29,9 @@ func (c *Client) Configured() bool {
 }
 
 type sendMessagePayload struct {
-	ChatID          string `json:"chat_id"`
-	Text            string `json:"text"`
-	ParseMode       string `json:"parse_mode"`
-	MessageThreadID int    `json:"message_thread_id,omitempty"`
+	ChatID    string `json:"chat_id"`
+	Text      string `json:"text"`
+	ParseMode string `json:"parse_mode"`
 }
 
 type apiResponse struct {
@@ -42,16 +41,15 @@ type apiResponse struct {
 
 var ErrNotConfigured = errors.New("telegram_not_configured")
 
-func (c *Client) Send(ctx context.Context, text string, threadID int) error {
+func (c *Client) Send(ctx context.Context, text string) error {
 	if !c.Configured() {
 		return ErrNotConfigured
 	}
 
 	payload := sendMessagePayload{
-		ChatID:          c.chatID,
-		Text:            text,
-		ParseMode:       "Markdown",
-		MessageThreadID: threadID,
+		ChatID:    c.chatID,
+		Text:      text,
+		ParseMode: "Markdown",
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
