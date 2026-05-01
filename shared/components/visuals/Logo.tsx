@@ -2,28 +2,37 @@ import { cn } from "../../lib/utils";
 
 interface LogoProps {
   className?: string;
-  /** Высота знака в px (ширина пропорциональна). По умолчанию 32. */
+  /** Высота знака в px (ширина пропорциональна). По умолчанию 28. */
   size?: number;
+  /** Скрыть текст «Legan Studio» (оставить только знак). */
+  iconOnly?: boolean;
+  textClassName?: string;
 }
 
 /**
- * Монограмма L+S: L идёт сверху вниз, поворачивает вправо на «хвостик»,
- * из конца хвостика непрерывно вытекает S — нижняя кривая, средняя,
- * верхняя кривая. Один путь, толстая обводка с круглыми торцами.
+ * Монограмма L+S одной непрерывной обводкой + wordmark «Legan Studio» в Roboto.
+ * Знак — кастомный SVG-путь (L → хвост L → нижняя кривая S → верхняя кривая S).
  */
-export function Logo({ className, size = 32 }: LogoProps) {
-  // viewBox 38×32, пропорции ~1.19:1
+export function Logo({
+  className,
+  size = 28,
+  iconOnly = false,
+  textClassName,
+}: LogoProps) {
+  // viewBox 38×32, ширина пропорциональна
   const width = Math.round((size * 38) / 32);
   return (
-    <span className={cn("inline-flex items-center text-fg", className)}>
+    <span className={cn("inline-flex items-center gap-1 text-fg", className)}>
       <svg
         width={width}
         height={size}
         viewBox="0 0 38 32"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        aria-label="Legan Studio"
-        role="img"
+        aria-hidden={iconOnly ? undefined : "true"}
+        aria-label={iconOnly ? "Legan Studio" : undefined}
+        role={iconOnly ? "img" : undefined}
+        className="shrink-0"
       >
         <path
           d="M 7 5 V 22 A 4 4 0 0 0 11 26 H 17 C 26 26 28 18 19 18 C 10 18 12 9 21 9"
@@ -34,6 +43,16 @@ export function Logo({ className, size = 32 }: LogoProps) {
           fill="none"
         />
       </svg>
+      {iconOnly ? null : (
+        <span
+          className={cn(
+            "font-manrope font-bold text-body-lg leading-none tracking-tight",
+            textClassName,
+          )}
+        >
+          Legan Studio
+        </span>
+      )}
     </span>
   );
 }

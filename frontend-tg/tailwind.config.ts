@@ -50,7 +50,7 @@ const config: Config = {
       },
       fontFamily: {
         sans: ["var(--font-inter)", "Inter", "system-ui", "-apple-system", "Segoe UI", "Roboto", "sans-serif"],
-        michroma: ["var(--font-michroma)", "sans-serif"],
+        manrope: ["var(--font-manrope)", "sans-serif"],
       },
       fontSize: {
         display: ["clamp(2.5rem, 5vw, 4.5rem)", { lineHeight: "1.05", letterSpacing: "-0.02em" }],
