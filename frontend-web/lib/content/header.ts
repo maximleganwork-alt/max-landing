@@ -1,7 +1,7 @@
 import type { HeaderContent } from "shared/lib/content/header";
 
 export const headerContent: HeaderContent = {
-  ariaLabel: "BotMax — на главную",
+  ariaLabel: "Legan Studio — на главную",
   navItems: [
     { href: "#services", label: "Услуги" },
     { href: "#process", label: "Процесс" },

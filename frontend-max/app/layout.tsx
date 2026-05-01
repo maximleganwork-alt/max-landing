@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Inter } from "next/font/google";
+import { Inter, Michroma } from "next/font/google";
 import { Providers } from "shared/components/Providers";
 import { YandexMetrika } from "shared/components/analytics/YandexMetrika";
 import { CookieBanner } from "shared/components/analytics/CookieBanner";
@@ -14,13 +14,20 @@ const inter = Inter({
   preload: true,
 });
 
+const michroma = Michroma({
+  subsets: ["latin"],
+  weight: "400",
+  display: "swap",
+  variable: "--font-michroma",
+});
+
 export const metadata: Metadata = buildSiteMetadata({ config: siteConfig });
 
 export const viewport: Viewport = buildSiteViewport(siteConfig);
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ru-RU" className={inter.variable}>
+    <html lang="ru-RU" className={`${inter.variable} ${michroma.variable}`}>
       <head>
         {/* Performance hints — opening connections to third-parties before consent fires. */}
         <link rel="preconnect" href="https://mc.yandex.ru" crossOrigin="" />

@@ -16,9 +16,9 @@ export const siteConfig: SiteConfig = {
   source: "tg",
   purpose: "разработка чат-ботов и AI-решений для мессенджера Telegram",
   siteUrl: SITE_URL,
-  siteName: "BotMax",
+  siteName: "Legan Studio",
   title:
-    "Разработка ботов для Telegram под ключ — AI, Mini Apps, оплаты | BotMax",
+    "Разработка ботов для Telegram под ключ — AI, Mini Apps, оплаты | Legan Studio",
   ogTitle: "Разработка ботов для Telegram под ключ",
   description:
     "Разрабатываем чат-ботов, AI-ассистентов и Telegram Mini Apps. Опыт 5+ лет, 80+ ботов в продакшене, гарантия. Оценка и ТЗ — бесплатно. Цены от 15 000 ₽.",
@@ -45,6 +45,6 @@ export const siteConfig: SiteConfig = {
     "корпоративный бот Telegram",
     "разработка ботов под ключ",
   ],
-  sameAs: [],
+  sameAs: ["https://t.me/legan_studio"],
   themeColor: "#229ED9",
 };

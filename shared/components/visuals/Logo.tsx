@@ -1,55 +1,39 @@
-﻿import { cn } from "../../lib/utils";
+import { cn } from "../../lib/utils";
 
 interface LogoProps {
   className?: string;
+  /** Высота знака в px (ширина пропорциональна). По умолчанию 32. */
   size?: number;
-  showText?: boolean;
-  textClassName?: string;
 }
 
-export function Logo({ className, size = 32, showText = true, textClassName }: LogoProps) {
+/**
+ * Монограмма L+S: L идёт сверху вниз, поворачивает вправо на «хвостик»,
+ * из конца хвостика непрерывно вытекает S — нижняя кривая, средняя,
+ * верхняя кривая. Один путь, толстая обводка с круглыми торцами.
+ */
+export function Logo({ className, size = 32 }: LogoProps) {
+  // viewBox 38×32, пропорции ~1.19:1
+  const width = Math.round((size * 38) / 32);
   return (
-    <span className={cn("inline-flex items-center gap-2", className)}>
+    <span className={cn("inline-flex items-center text-fg", className)}>
       <svg
-        width={size}
+        width={width}
         height={size}
-        viewBox="0 0 32 32"
+        viewBox="0 0 38 32"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        aria-hidden="true"
-        className="shrink-0"
+        aria-label="Legan Studio"
+        role="img"
       >
         <path
-          d="M9 21.5C5.13401 21.5 2 18.366 2 14.5C2 10.634 5.13401 7.5 9 7.5C9.55649 7.5 10.0987 7.56507 10.6195 7.6886C11.7949 5.49736 14.1078 4 16.7727 4C20.6387 4 23.7727 7.13401 23.7727 11C23.7727 11.1746 23.7663 11.3477 23.7536 11.5191C23.8351 11.5066 23.9183 11.5 24.0027 11.5C27.5944 11.5 30.5 14.4056 30.5 17.9973C30.5 21.5891 27.5944 24.5 24.0027 24.5L9 24.5C8.86079 24.5 8.72281 24.4972 8.58607 24.4917L8.5 24.4882V21.5H9Z"
-          fill="url(#botmaxLogoGradient)"
+          d="M 7 5 V 22 A 4 4 0 0 0 11 26 H 17 C 26 26 28 18 19 18 C 10 18 12 9 21 9"
+          stroke="currentColor"
+          strokeWidth="5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="none"
         />
-        <circle cx="13" cy="16" r="1.5" fill="white" />
-        <circle cx="18" cy="16" r="1.5" fill="white" />
-        <circle cx="23" cy="16" r="1.5" fill="white" />
-        <defs>
-          <linearGradient
-            id="botmaxLogoGradient"
-            x1="0"
-            y1="0"
-            x2="32"
-            y2="32"
-            gradientUnits="userSpaceOnUse"
-          >
-            <stop offset="0%" stopColor="var(--brand-grad-from)" />
-            <stop offset="100%" stopColor="var(--brand-grad-to)" />
-          </linearGradient>
-        </defs>
       </svg>
-      {showText ? (
-        <span
-          className={cn(
-            "font-semibold tracking-tight text-fg text-body-lg",
-            textClassName,
-          )}
-        >
-          BotMax
-        </span>
-      ) : null}
     </span>
   );
 }

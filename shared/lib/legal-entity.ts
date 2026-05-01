@@ -31,12 +31,12 @@ export interface LegalEntity {
  * `brand` и `contactEmail` — пока плейсхолдеры. Заменить перед запуском.
  */
 export const legalEntity: LegalEntity = {
-  brand: "BotMax",
+  brand: "Legan Studio",
   legalName: "ИП Леган Максим Артёмович",
   inn: "910231127118",
   ogrnip: "326911200028942",
   address: "295050, Республика Крым, г. Симферополь, ул. Никанорова, д. 4Б, кв. 75",
-  contactEmail: "hello@example.ru",
+  contactEmail: "legan-studio@yandex.com",
   policyDate: "30 апреля 2026 г.",
   policyRevision: 2,
   bank: {

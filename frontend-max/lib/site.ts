@@ -20,9 +20,9 @@ export const siteConfig: SiteConfig = {
   source: "max",
   purpose: "разработка чат-ботов и AI-решений для мессенджера MAX",
   siteUrl: SITE_URL,
-  siteName: "BotMax",
+  siteName: "Legan Studio",
   title:
-    "Разработка ботов для MAX под ключ — AI, мини-приложения, интеграции | BotMax",
+    "Разработка ботов для MAX под ключ — AI, мини-приложения, интеграции | Legan Studio",
   ogTitle: "Разработка ботов для MAX под ключ",
   description:
     "Разрабатываем чат-ботов, AI-ассистентов и мини-приложения для мессенджера MAX. Опыт 5+ лет, 50+ проектов, гарантия. Оценка и ТЗ — бесплатно. Цены от 15 000 ₽.",
@@ -48,6 +48,6 @@ export const siteConfig: SiteConfig = {
     "GPT бот MAX",
     "национальный мессенджер MAX",
   ],
-  sameAs: [],
+  sameAs: ["https://t.me/legan_studio"],
   themeColor: "#5B8DFF",
 };

@@ -12,8 +12,8 @@ export const leadFormContent: LeadFormContent = {
       icon: Send,
       iconBgClass: "bg-[#229ED9] text-white",
       title: "Написать в Telegram",
-      subtitle: "@botmax_studio_tg",
-      href: "https://t.me/botmax_studio_tg",
+      subtitle: "@legan_studio",
+      href: "https://t.me/legan_studio",
       goal: "direct_message_click_telegram",
     },
     {
@@ -35,8 +35,8 @@ export const leadFormContent: LeadFormContent = {
       icon: Mail,
       iconBgClass: "bg-fg text-bg",
       title: "Написать на email",
-      subtitle: "hello@example.ru",
-      href: "mailto:hello@example.ru",
+      subtitle: "legan-studio@yandex.com",
+      href: "mailto:legan-studio@yandex.com",
     },
   ],
 };

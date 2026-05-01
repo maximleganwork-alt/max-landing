@@ -27,7 +27,7 @@ export function Footer({
       <div className="container-narrow py-16">
         <div className="grid grid-cols-1 gap-10 sm:grid-cols-2 lg:grid-cols-4">
           <div className="flex flex-col gap-4">
-            <Logo textClassName="!text-white" />
+            <Logo className="!text-white" />
             <p className="text-body-sm text-slate-400 leading-relaxed">{description}</p>
             <ul className="flex items-center gap-2 list-none p-0 m-0">
               {social.map((s) => {

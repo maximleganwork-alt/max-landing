@@ -16,8 +16,8 @@ export const siteConfig: SiteConfig = {
   source: "web",
   purpose: "разработка сайтов, CRM/ERP-систем и веб-сервисов под ключ",
   siteUrl: SITE_URL,
-  siteName: "BotMax",
-  title: "Веб-разработка под ключ — лендинги, сайты, CRM, ERP, SaaS | BotMax",
+  siteName: "Legan Studio",
+  title: "Веб-разработка под ключ — лендинги, сайты, CRM, ERP, SaaS | Legan Studio",
   ogTitle: "Веб-разработка под ключ",
   description:
     "Разрабатываем сайты, e-commerce, CRM, ERP-системы и веб-сервисы. Опыт 5+ лет, фиксированные сроки и цена в договоре. Оценка и ТЗ — бесплатно. Цены от 40 000 ₽.",
@@ -45,6 +45,6 @@ export const siteConfig: SiteConfig = {
     "заказать сайт",
     "веб-студия",
   ],
-  sameAs: [],
+  sameAs: ["https://t.me/legan_studio"],
   themeColor: "#5B8DFF",
 };

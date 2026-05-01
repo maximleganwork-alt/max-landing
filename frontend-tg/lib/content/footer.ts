@@ -25,9 +25,9 @@ export const footerContent: FooterContent = {
     { label: "Договор-оферта", href: "/offer" },
   ],
   social: [
-    { label: "Написать в Telegram", href: "#", kind: "telegram" },
+    { label: "Написать в Telegram", href: "https://t.me/legan_studio", kind: "telegram" },
     { label: "Написать в MAX", href: "#", kind: "max" },
   ],
-  copyright: "© 2026 BotMax. Все права защищены.",
+  copyright: "© 2026 Legan Studio. Все права защищены.",
   legalAddress: "ИП Леган Максим Артёмович, ИНН 910231127118, ОГРНИП 326911200028942",
 };
