@@ -5,157 +5,572 @@ date: "2026-03-14"
 tags: ["Telegram", "разработка", "инфраструктура"]
 ---
 
-VPS — самый частый вариант хостинга бота: дешевле облачных функций, гибче shared-хостинга, контроля больше, чем у managed-сервисов. Разберём, как развернуть бот на чистом VPS Ubuntu и не забыть критичные шаги.
+VPS — самый частый вариант хостинга бота: дешевле облачных функций, гибче shared-хостинга, контроля больше, чем у managed-сервисов. Разберём подробно, как развернуть бот на чистом VPS Ubuntu, на каком провайдере, с каким стеком, и какие шаги нельзя пропускать. Цель — пошаговый чек-лист, по которому даже разработчик без опыта DevOps доведёт бот до продакшена за один-два дня.
 
-## Выбор VPS
+## Выбор VPS-провайдера для РФ
 
-Минимальная конфигурация для типового бота: 1–2 vCPU, 2 ГБ RAM, 20–40 ГБ SSD. Этого хватит на 1–10k активных пользователей в день. AI-бот с локальной моделью или большим Redis-state — от 4 ГБ RAM.
+Критерии выбора провайдера: цена за конфигурацию 2 vCPU / 4 GB RAM (типовой бот среднего размера), надёжность инфраструктуры, география дата-центров и качество техподдержки. Для бота, обрабатывающего персональные данные граждан РФ, важно соблюдение 152-ФЗ — первичная обработка должна вестись на территории России.
 
-География — критичный момент. Бот в России обычно живёт у российских хостеров (Selectel, Timeweb, Yandex Cloud). Bot API доступен из России без особых усилий. Если бот зависит от сторонних API, проверяйте доступность из выбранного региона.
+| Провайдер | Цена 2 vCPU / 4 GB | DC | Поддержка | Особенности |
+|---|---|---|---|---|
+| Yandex Cloud | от 1500 руб/мес | Москва, Владимир, Калуга | 24/7, тикеты | Managed-сервисы рядом, YandexGPT, S3 |
+| Selectel | от 800 руб/мес | СПб, Москва | 24/7, чат и тикеты | Гибкие конфиги, S3-хранилище |
+| VK Cloud | от 1300 руб/мес | Москва | 24/7 | Managed PostgreSQL, Kubernetes |
+| REG.RU | от 600 руб/мес | Москва, СПб | Базовая | Простой VPS, домены рядом |
+| Beget | от 700 руб/мес | Москва | Чат, отзывчивая | Дружелюбный для новичка |
+| FirstVDS | от 500 руб/мес | Москва, СПб | Тикеты | Самый дешёвый сегмент |
+| Timeweb Cloud | от 700 руб/мес | СПб, Москва, Амстердам | 24/7 | Хороший баланс цена/качество |
 
-## Подготовка сервера
+Для большинства проектов выбор сводится к Selectel или Timeweb (баланс цена-качество), Yandex Cloud (если нужны managed-сервисы и интеграция с YandexGPT/Object Storage), VK Cloud (если нужен managed PostgreSQL). Бюджетный вариант — Beget или FirstVDS.
 
-После создания VPS и подключения по SSH:
+## Какой дата-центр выбрать
 
-1. Обновляем пакеты: `apt update && apt upgrade -y`.
-2. Создаём отдельного пользователя (не работаем под root): `adduser deploy`, добавляем в `sudo`.
-3. Настраиваем SSH-ключи и отключаем парольную аутентификацию в `/etc/ssh/sshd_config`.
-4. Включаем UFW: `ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw enable`.
-5. Ставим Docker и docker-compose-plugin по официальной инструкции.
-6. Настраиваем swap, если RAM ≤ 2 ГБ — это спасёт сборку Next.js или больших Python-зависимостей.
+Если бот собирает ПДн (имена, телефоны, email) граждан РФ — 152-ФЗ требует размещения первичной БД в России. Это значит DC в Москве, СПб, Владимире или другом российском городе. Зарубежный DC можно использовать только для вторичной обработки, и то — со скрипом и с уведомлением Роскомнадзора о трансграничной передаче.
 
-Без этих шагов бот «работает», но любая случайная атака подбора паролей или нехватка памяти превращается в инцидент.
+Для самих обращений к Bot API география менее критична: серверы Telegram — в Нидерландах (Амстердам) и Финляндии (Хельсинки). VPS в Москве делает 30-50 мс RTT до Telegram, в СПб — 20-30 мс, в Амстердаме — 1-3 мс. Если бот высоконагружен и каждый миллисекунд важен — DC в Северной Европе быстрее. Но для 99% ботов разница не заметна.
+
+Итог: для ПДн-проектов — российский DC. Для чисто инфраструктурного бота без хранения ПДн — можно Амстердам или Хельсинки.
+
+## Минимальные требования по железу
+
+Размер VPS зависит от профиля нагрузки. Грубые ориентиры:
+
+| Тип бота | vCPU | RAM | Диск | Цена |
+|---|---|---|---|---|
+| Маленький (до 1k DAU, без БД) | 1 | 1 GB | 20 GB | 500-800 руб/мес |
+| Средний (1-10k DAU, Postgres + Redis) | 2 | 4 GB | 40 GB | 1500-2500 руб/мес |
+| С AI/LLM-интеграцией или Mini App | 4 | 8 GB | 80 GB | 4000-8000 руб/мес |
+| Высоконагруженный (50k+ DAU, кластер) | 8+ | 16+ GB | 160+ GB | от 10000 руб/мес |
+
+Если RAM меньше 2 GB — обязательно настройте swap-файл на 2 GB, иначе сборка Docker-образа или `npm install` упадут с OOM. Диск — SSD/NVMe, не HDD: Postgres на HDD превращает любой запрос в боль.
+
+## Выбор операционной системы
+
+Стандарт для серверов — Ubuntu 22.04 LTS или 24.04 LTS. Долгий цикл поддержки (5 лет), обширная документация, все Docker-образы тестируются именно на Ubuntu. Альтернатива — Debian 12 (стабильнее, чуть консервативнее в версиях пакетов).
+
+Alpine Linux подходит для контейнеров (минимальный образ), но в качестве хостовой ОС менее удобна — musl libc, нестандартный busybox, мелкие отличия в инструментарии. Для VPS лучше Ubuntu/Debian, а внутрь контейнеров класть alpine-образы.
+
+CentOS Stream / Rocky Linux — для тех, кто привык к RHEL-стеку. Для большинства Telegram-ботов избыточно.
+
+## Первичная настройка сервера
+
+После создания VPS и подключения по SSH под root:
+
+```bash
+# 1. Обновляем пакеты
+apt update && apt upgrade -y
+
+# 2. Создаём пользователя deploy
+adduser deploy
+usermod -aG sudo deploy
+
+# 3. Копируем SSH-ключ для нового пользователя
+mkdir -p /home/deploy/.ssh
+cp ~/.ssh/authorized_keys /home/deploy/.ssh/
+chown -R deploy:deploy /home/deploy/.ssh
+chmod 700 /home/deploy/.ssh
+chmod 600 /home/deploy/.ssh/authorized_keys
+
+# 4. Отключаем root SSH и пароли в /etc/ssh/sshd_config
+sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/^#*Port 22/Port 2222/' /etc/ssh/sshd_config
+systemctl restart sshd
+```
+
+После этого проверьте, что заходите под `deploy@server -p 2222` ключом, и только тогда закрывайте текущую root-сессию. Иначе можно остаться без доступа.
+
+## UFW firewall
+
+Базовое правило: запрещено всё, разрешено только нужное.
+
+```bash
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 2222/tcp comment 'SSH'
+ufw allow 80/tcp comment 'HTTP'
+ufw allow 443/tcp comment 'HTTPS'
+ufw enable
+ufw status verbose
+```
+
+Не забудьте порт SSH (если меняли на нестандартный — открывайте именно его). Если бот использует доп. порты — открывайте точечно, не `ufw allow from any`.
+
+## fail2ban против перебора SSH
+
+Даже на нестандартном порту SSH сканируется ботами. fail2ban банит IP после нескольких неудачных попыток.
+
+```bash
+apt install -y fail2ban
+cat > /etc/fail2ban/jail.local <<'EOF'
+[sshd]
+enabled = true
+port    = 2222
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+EOF
+systemctl enable --now fail2ban
+fail2ban-client status sshd
+```
+
+Опционально добавьте jail для nginx (защита от брутфорса формы или webhook).
+
+## Установка Docker и docker-compose
+
+```bash
+# Официальный скрипт Docker
+curl -fsSL https://get.docker.com | sh
+usermod -aG docker deploy
+
+# docker compose plugin уже идёт в комплекте с современным Docker
+docker compose version
+```
+
+После добавления `deploy` в группу `docker` нужно перелогиниться, иначе команды `docker` будут требовать `sudo`.
+
+<InlineCTA>Поможем спроектировать инфраструктуру Telegram-бота под нагрузку</InlineCTA>
 
 ## Структура проекта
 
-Стандартный набор:
+Стандартный набор файлов для бота на Python aiogram:
 
-- `Dockerfile` — multi-stage сборка: builder ставит зависимости, runtime копирует только нужное.
-- `docker-compose.yml` — описывает бот, Redis, Postgres, всё через `restart: unless-stopped`.
-- `.env` — секреты (`BOT_TOKEN`, `REDIS_URL`, `DB_URL`). В git **никогда** не коммитим, держим только в `.env.example`.
-- `deploy/nginx/bot.conf` — конфиг nginx для webhook’а.
-- `Makefile` или `deploy.sh` — команды `make deploy`, `make logs`, `make migrate`.
-
-Container-first подход даёт воспроизводимость: на ноутбуке и на VPS бот собирается одинаково.
-
-## Webhook и nginx
-
-Webhook требует публичный HTTPS. Самая простая схема — nginx на хосте, контейнер с ботом слушает на 127.0.0.1:8080.
-
-```nginx
-server {
-    server_name bot.example.com;
-    listen 443 ssl http2;
-    location /webhook/ {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
+```
+bot/
+  Dockerfile
+  docker-compose.yml
+  .env.example
+  .gitignore             # обязательно с .env внутри
+  app/
+    main.py
+    handlers/
+    services/
+    db/
+  deploy/
+    nginx/bot.conf
+    backup.sh
+  requirements.txt
 ```
 
-SSL через Let’s Encrypt: `certbot --nginx -d bot.example.com`. Сертификат продлевается автоматически через cron/systemd таймер.
+`.env` никогда не коммитим. Только `.env.example` со структурой переменных без значений.
 
-Для долгих операций увеличиваем `proxy_read_timeout 60s` — Telegram считает webhook упавшим после 60 секунд.
+## docker-compose.yml целиком
 
-<InlineCTA>Поможем спроектировать архитектуру под нагрузку</InlineCTA>
-
-## Запуск через docker compose
-
-Минимальный `docker-compose.yml`:
+Полный пример с четырьмя сервисами: бот, Postgres, Redis, Nginx.
 
 ```yaml
 services:
   bot:
     build: .
     env_file: .env
-    ports:
-      - "127.0.0.1:8080:8080"
-    depends_on: [redis, postgres]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
-  redis:
-    image: redis:7-alpine
-    volumes: [redis_data:/data]
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [internal]
+
   postgres:
     image: postgres:16-alpine
     env_file: .env
-    volumes: [pg_data:/var/lib/postgresql/data]
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]
+      interval: 10s
     restart: unless-stopped
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks: [internal]
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx:/etc/nginx/conf.d:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on: [bot]
+    restart: unless-stopped
+    networks: [internal]
+
+networks:
+  internal:
+
 volumes:
-  redis_data:
   pg_data:
+  redis_data:
 ```
 
-Поднимаем: `docker compose up -d --build`. Логи: `docker compose logs -f bot`. Перезапуск после деплоя: `docker compose restart bot`.
+Если предпочитаете nginx на хосте (а не в контейнере) — уберите сервис `nginx` и пробросьте порт `127.0.0.1:8080:8080` у `bot`.
 
-## Обновления и CI/CD
+## Dockerfile для Python aiogram
 
-Минимальный CI/CD без сложных инструментов: на push в `main` GitHub Actions собирает образ, пушит в registry, заходит на VPS по SSH и делает `docker compose pull && docker compose up -d`.
+Multi-stage build: builder ставит зависимости, runtime — только то, что нужно для запуска.
 
-Альтернативно — `deploy.sh` на сервере, который делает `git pull && docker compose up -d --build`. Подходит для команды из 1–2 человек.
+```dockerfile
+# --- builder ---
+FROM python:3.12-slim AS builder
+WORKDIR /app
+RUN pip install --no-cache-dir --upgrade pip
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
 
-В обоих случаях критично: миграции БД до старта новой версии, healthcheck перед переключением трафика, откат на предыдущий образ при сбое.
+# --- runtime ---
+FROM python:3.12-slim AS runtime
+RUN useradd -m -u 1000 botuser
+WORKDIR /app
+COPY --from=builder /root/.local /home/botuser/.local
+COPY --chown=botuser:botuser app/ ./app/
+USER botuser
+ENV PATH=/home/botuser/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+EXPOSE 8080
+CMD ["python", "-m", "app.main"]
+```
 
-## Бэкапы
+Для совсем минимального образа можно использовать `gcr.io/distroless/python3` в качестве runtime — но тогда отлаживать без shell сложнее.
 
-Бот без бэкапа — бот, ждущий первой потери данных. Минимум:
+## Nginx как reverse-proxy
 
-1. Дамп Postgres каждый день (`pg_dump`), хранить 7–30 дней.
-2. Снимок Redis (если в нём есть критичные данные) раз в час.
-3. Архивы загруженных пользователями файлов на S3-совместимое хранилище.
-4. Отдельный экземпляр бэкапов в другом регионе.
+Nginx терминирует TLS и пробрасывает webhook на контейнер бота.
 
-Раз в квартал тренируем восстановление: разворачиваем бэкап на тестовом стенде. Бэкап, который вы не пробовали восстановить, не считается.
+```nginx
+server {
+    listen 80;
+    server_name bot.example.com;
+    return 301 https://$host$request_uri;
+}
 
-## Мониторинг и алерты
+server {
+    listen 443 ssl http2;
+    server_name bot.example.com;
 
-Минимум для VPS-бота:
+    ssl_certificate     /etc/letsencrypt/live/bot.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/bot.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
 
-- `docker compose ps` через cron, алерт на упавшие контейнеры.
-- `df -h`, `free -h` через node_exporter + Prometheus.
-- Sentry на ошибки кода.
-- Healthcheck-эндпоинт `/health`, дёргаемый снаружи (UptimeRobot, Healthchecks.io).
+    # Rate limit на webhook
+    limit_req_zone $binary_remote_addr zone=webhook:10m rate=30r/s;
 
-Алерты — в Telegram-канал команды или Slack. Приходящий в 3 часа ночи pager — реальность для команд с продуктом.
+    location /webhook/ {
+        limit_req zone=webhook burst=60 nodelay;
+        proxy_pass http://bot:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 60s;
+    }
+}
+```
 
-## Безопасность
+Telegram считает webhook упавшим после 60 секунд — при долгих операциях не блокируйте handler синхронно, отвечайте 200 сразу и обрабатывайте в фоне.
 
-Краткий чек-лист:
+## Let's Encrypt и certbot
 
-1. Только SSH-ключи, без паролей.
-2. Файрвол: открыты только нужные порты.
-3. fail2ban для ssh и nginx.
-4. Регулярные обновления (`unattended-upgrades`).
-5. Секреты в `.env`, права 600, владелец `deploy`.
-6. Бот-токен ротируем при компрометации (`/revoke` в BotFather, новый токен).
-7. webhook-secret в setWebhook + проверка в обработчике.
+Бесплатный TLS-сертификат с автопродлением:
+
+```bash
+apt install -y certbot python3-certbot-nginx
+
+# Если nginx на хосте:
+certbot --nginx -d bot.example.com --non-interactive --agree-tos -m admin@example.com
+
+# Если nginx в контейнере — используем standalone-режим:
+docker compose stop nginx
+certbot certonly --standalone -d bot.example.com
+docker compose start nginx
+```
+
+Auto-renewal — systemd timer ставится автоматически при установке certbot. Проверить: `systemctl list-timers | grep certbot`. Тестовое продление: `certbot renew --dry-run`.
+
+## Домен и DNS
+
+A-запись поддомена должна указывать на IP VPS. У большинства регистраторов (REG.RU, RU-CENTER, Cloudflare) — стандартный интерфейс. TTL ставьте 300-3600 секунд. После добавления A-записи DNS-распространение занимает от минут до часа.
+
+```
+Тип: A
+Имя: bot
+Значение: 1.2.3.4
+TTL: 300
+```
+
+Проверка: `dig bot.example.com +short` должен вернуть IP VPS.
+
+## Webhook setup
+
+После того как HTTPS поднят, регистрируем webhook у Telegram. Используем `secret_token` для проверки источника входящих запросов.
+
+```bash
+curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
+  -d "url=https://bot.example.com/webhook/<RANDOM_PATH>" \
+  -d "secret_token=<RANDOM_64_HEX>" \
+  -d "drop_pending_updates=true"
+```
+
+В обработчике на стороне бота проверяйте заголовок `X-Telegram-Bot-Api-Secret-Token` — он должен равняться `secret_token`. Если нет — отбрасывайте запрос.
+
+`<RANDOM_PATH>` — случайная строка в URL, дополнительная защита от случайных сканеров.
+
+## Environment-переменные
+
+Минимальный `.env`:
+
+```ini
+BOT_TOKEN=123456:ABC...
+WEBHOOK_SECRET=64-symbol-random-hex
+WEBHOOK_PATH=random-url-suffix
+
+POSTGRES_USER=botuser
+POSTGRES_PASSWORD=strong-random-password
+POSTGRES_DB=botdb
+DATABASE_URL=postgresql://botuser:strong-random-password@postgres:5432/botdb
+
+REDIS_URL=redis://redis:6379/0
+```
+
+Файл `.env` должен быть в `.gitignore`. Права: `chmod 600 .env`, владелец — `deploy`. Для крупных проектов используйте HashiCorp Vault, Doppler или Yandex Lockbox — секреты хранятся централизованно, ротируются и аудируются.
+
+## Postgres: Docker vs managed
+
+В Docker — дёшево и просто, но ответственность за бэкапы, обновления, точечное восстановление — ваша. Подходит для маленьких и средних ботов.
+
+Managed PostgreSQL (Yandex Managed PostgreSQL, VK Cloud Database, Selectel Managed Databases) — дороже на 2000-5000 руб/мес, но провайдер берёт на себя бэкапы, point-in-time recovery, патчи безопасности, репликацию и failover. Для проектов, где простой данных = убытки, managed окупается.
+
+Промежуточный вариант — Postgres в Docker, но бэкапы отгружаются в S3 (см. ниже).
+
+## Volumes и persist
+
+Данные, которые должны пережить пересоздание контейнера, держим в volumes:
+
+- `pg_data` — данные Postgres.
+- `redis_data` — снапшоты Redis (RDB/AOF).
+- Загрузки пользователей — отдельный bind-mount `./uploads:/app/uploads` или, лучше, S3-совместимое хранилище (Yandex Object Storage, Selectel S3).
+
+Логи приложения не пишите в volume — пишите в stdout/stderr, Docker сохранит сам.
+
+## Логи: docker и централизация
+
+По умолчанию Docker пишет логи в JSON-файлы без ротации, и они растут вечно. Включите rotation в `/etc/docker/daemon.json`:
+
+```json
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "50m",
+    "max-file": "5"
+  }
+}
+```
+
+Перезапустите docker: `systemctl restart docker`. Для крупных проектов — централизованное логирование через Grafana Loki + Promtail или ELK-стек. Для маленьких — `docker compose logs -f bot` плюс ротация.
+
+## Healthcheck
+
+Минимальный healthcheck-эндпоинт в боте:
+
+```python
+from aiohttp import web
+
+async def health(request):
+    return web.json_response({"status": "ok"})
+
+app.router.add_get("/health", health)
+```
+
+В `docker-compose.yml` уже прописан healthcheck. Docker сам отметит контейнер unhealthy и (при `restart: unless-stopped`) перезапустит. Внешний мониторинг (Uptime Kuma, Healthchecks.io) дёргает `/health` через nginx.
+
+<InlineCTA>Подключим мониторинг и алерты к вашему боту за 1-2 дня</InlineCTA>
+
+## CI/CD через GitHub Actions
+
+Простой пайплайн: на push в `main` собираем образ, заходим на VPS по SSH, делаем pull и rolling restart.
+
+```yaml
+name: Deploy
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: deploy
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 2222
+          script: |
+            cd ~/bot
+            git pull origin main
+            docker compose pull
+            docker compose up -d --build
+            docker image prune -f
+```
+
+Альтернативы: Watchtower (автоматический pull новых образов из registry), Ansible (для сложных мульти-серверных деплоев), GitLab CI (если код в GitLab).
+
+## Blue-green / rolling deploy
+
+Для нулевого downtime: два инстанса бота (`bot-blue`, `bot-green`), nginx upstream переключается между ними.
+
+```nginx
+upstream bot_backend {
+    server bot-blue:8080 max_fails=1 fail_timeout=10s;
+    server bot-green:8080 backup;
+}
+
+location /webhook/ {
+    proxy_pass http://bot_backend;
+}
+```
+
+Деплой-скрипт обновляет green, ждёт healthcheck, переключает primary, потом обновляет blue. Для большинства ботов проще принять 5-10 секунд downtime при перезапуске и не усложнять.
+
+## Мониторинг: Prometheus + Grafana
+
+Минимальный observability-стек:
+
+- node_exporter — метрики хоста (CPU, RAM, диск, сеть).
+- cAdvisor — метрики контейнеров.
+- Prometheus — сбор метрик, retention 14-30 дней.
+- Grafana — дашборды.
+- Uptime Kuma — простой uptime-чек извне (отдельный VPS!).
+
+Для маленьких ботов достаточно Uptime Kuma + Sentry. Полный стек Prometheus/Grafana разворачивайте, когда метрик действительно надо много.
+
+## Бэкапы Postgres
+
+Ежедневный pg_dump в S3, retention 14-30 дней. Скрипт `deploy/backup.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+DATE=$(date +%Y-%m-%d_%H-%M)
+BACKUP_FILE="/tmp/bot_${DATE}.sql.gz"
+S3_BUCKET="s3://bot-backups"
+RETENTION_DAYS=30
+
+docker compose exec -T postgres \
+  pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
+  | gzip > "$BACKUP_FILE"
+
+aws s3 cp "$BACKUP_FILE" "$S3_BUCKET/" \
+  --endpoint-url=https://storage.yandexcloud.net
+
+rm "$BACKUP_FILE"
+
+# Удаляем старые
+aws s3 ls "$S3_BUCKET/" --endpoint-url=https://storage.yandexcloud.net \
+  | awk '{print $4}' \
+  | while read -r file; do
+      file_date=$(echo "$file" | grep -oP '\d{4}-\d{2}-\d{2}')
+      if [[ $(date -d "$file_date" +%s) -lt $(date -d "-${RETENTION_DAYS} days" +%s) ]]; then
+        aws s3 rm "$S3_BUCKET/$file" --endpoint-url=https://storage.yandexcloud.net
+      fi
+    done
+```
+
+Cron-задача: `0 3 * * * /home/deploy/bot/deploy/backup.sh >> /var/log/bot-backup.log 2>&1`. Раз в квартал делайте тестовое восстановление на отдельном VPS — бэкап, который не пробовали восстановить, не считается.
+
+## Запуск без Docker через systemd
+
+Если по каким-то причинам Docker не подходит (минимизация overhead, требование заказчика), запускаем бот через systemd unit.
+
+```ini
+[Unit]
+Description=Telegram Bot
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/home/deploy/bot
+EnvironmentFile=/home/deploy/bot/.env
+ExecStart=/home/deploy/bot/.venv/bin/python -m app.main
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Сохраняем как `/etc/systemd/system/bot.service`, активируем: `systemctl enable --now bot`. Логи: `journalctl -u bot -f`.
+
+## Безопасность: чек-лист
+
+1. SSH только по ключам, нестандартный порт, fail2ban активен.
+2. UFW: открыты только 2222/SSH, 80, 443.
+3. `secret_token` в setWebhook + проверка заголовка `X-Telegram-Bot-Api-Secret-Token`.
+4. IP-allowlist на webhook через nginx — Telegram официально использует CIDR `149.154.160.0/20` и `91.108.4.0/22`.
+5. Nginx rate limit на webhook (30 r/s + burst 60).
+6. Регулярные обновления: `unattended-upgrades` для безопасности.
+7. Секреты в `.env`, права 600, владелец `deploy`.
+8. Бот-токен ротируется при компрометации через `/revoke` в BotFather.
+9. Docker-образ запускается под non-root пользователем.
+10. Бэкапы в отдельный регион/провайдер.
+
+## Стоимость владения
+
+Грубая оценка ежемесячных расходов:
+
+| Конфигурация | VPS | Домен | S3 backup | Итого |
+|---|---|---|---|---|
+| Маленький бот | 500-1000 руб | 15 руб | 30 руб | 500-1100 руб |
+| Средний бот | 1500-3000 руб | 15 руб | 100 руб | 1700-3200 руб |
+| С AI/Mini App | 4000-8000 руб | 15 руб | 300 руб | 4500-8500 руб |
+| Высоконагруженный | 10000+ руб | 15 руб | 1000 руб | 11000+ руб |
+
+Это без учёта managed-сервисов: Yandex Managed PostgreSQL добавляет 2000-5000 руб/мес, выделенный мониторинг 500-1500 руб/мес.
 
 ## Итого
 
-VPS-деплой бота — это Docker + nginx + Let’s Encrypt + бэкапы + мониторинг. Собрать всё это можно за один день, поддерживать — около часа в неделю. Альтернативы (PaaS, серверлесс) проще на старте, но дороже и менее гибки на росте. Для большинства проектов VPS — оптимальный баланс.
+Деплой Telegram-бота на VPS — это последовательность чек-листа: выбрать провайдера и DC по 152-ФЗ, подобрать конфигурацию по нагрузке, настроить Ubuntu (non-root user, SSH-ключи, UFW, fail2ban), поставить Docker, описать `docker-compose.yml` с ботом, Postgres, Redis и nginx, поднять Let's Encrypt, зарегистрировать webhook с secret_token, настроить логи с ротацией, healthcheck, ежедневные бэкапы в S3 и хотя бы базовый мониторинг через Uptime Kuma. Один-два дня работы — и бот в продакшене с предсказуемой стоимостью владения 500-8000 руб/мес.
 
 <Faq>
-  <FaqItem q="Какой VPS нужен для Telegram-бота?">
-    Минимальная конфигурация для типового бота: 1–2 vCPU, 2 ГБ RAM, 20–40 ГБ SSD. Этого хватит на 1–10k активных пользователей в день. AI-бот с локальной моделью или большим Redis-state — от 4 ГБ RAM. География — критичный момент. Бот в России обычно живёт у российских хостеров (Selectel, Timeweb, Yandex Cloud). Bot API доступен из России без особых усилий. Если бот зависит от сторонних API (OpenAI, Stripe), проверяйте доступность из выбранного региона перед выбором хостера. Для AI-проектов часто берут Yandex Cloud для VM рядом с YandexGPT.
+  <FaqItem q="Какой VPS-провайдер выбрать для Telegram-бота в России?">
+    Для большинства проектов оптимальны Selectel и Timeweb Cloud по балансу цена-качество (от 800-1500 руб/мес за 2 vCPU/4 GB). Yandex Cloud — если нужны managed-сервисы, YandexGPT и Object Storage рядом. VK Cloud — если нужен managed PostgreSQL. Бюджетные варианты — Beget и FirstVDS (от 500-700 руб/мес). Если бот собирает ПДн граждан РФ, по 152-ФЗ обязательно выбирать DC в России — Москва, СПб, Владимир. Зарубежный DC (Амстердам, Хельсинки) даёт меньший ping до Telegram, но требует уведомления Роскомнадзора о трансграничной передаче.
   </FaqItem>
-  <FaqItem q="Как подготовить VPS Ubuntu для Telegram-бота?">
-    Шесть шагов после создания и подключения по SSH. Обновляем пакеты: apt update && apt upgrade -y. Создаём отдельного пользователя (не работаем под root): adduser deploy, добавляем в sudo. Настраиваем SSH-ключи и отключаем парольную аутентификацию в /etc/ssh/sshd_config. Включаем UFW: ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw enable. Ставим Docker и docker-compose-plugin по официальной инструкции. Настраиваем swap, если RAM ≤ 2 ГБ — это спасёт сборку Next.js или больших Python-зависимостей от OOM-killer.
+  <FaqItem q="Какая минимальная конфигурация VPS нужна для Telegram-бота?">
+    Маленький бот до 1000 DAU без БД работает на 1 vCPU / 1 GB RAM / 20 GB SSD за 500-800 руб/мес. Средний бот на 1-10k DAU с Postgres и Redis требует 2 vCPU / 4 GB / 40 GB за 1500-2500 руб/мес. Бот с AI/LLM-интеграцией или Mini App — 4 vCPU / 8 GB / 80 GB за 4000-8000 руб/мес. Высоконагруженный (50k+ DAU) — от 8 vCPU / 16 GB / 160 GB за 10000+ руб/мес. Если RAM меньше 2 GB, обязательно настройте swap-файл на 2 GB, иначе сборка Docker-образа упадёт с OOM. Диск только SSD/NVMe — Postgres на HDD превращает любой запрос в проблему.
   </FaqItem>
-  <FaqItem q="Как настроить webhook через nginx и Let's Encrypt?">
-    Webhook требует публичный HTTPS. Самая простая схема — nginx на хосте, контейнер с ботом слушает на 127.0.0.1:8080. Конфиг nginx с server_name bot.example.com, listen 443 ssl http2, location /webhook/ с proxy_pass http://127.0.0.1:8080 и заголовками X-Forwarded-For, X-Real-IP. SSL через Let's Encrypt: certbot --nginx -d bot.example.com. Сертификат продлевается автоматически через cron/systemd таймер. Для долгих операций увеличиваем proxy_read_timeout 60s — Telegram считает webhook упавшим после 60 секунд.
+  <FaqItem q="Как настроить безопасность VPS для Telegram-бота?">
+    Десять пунктов чек-листа. SSH только по ключам, без паролей, нестандартный порт (например, 2222). Fail2ban с баном после 5 неудачных попыток. UFW открывает только нужные порты (SSH, 80, 443). secret_token в setWebhook и проверка заголовка X-Telegram-Bot-Api-Secret-Token в обработчике. IP-allowlist на webhook через nginx — Telegram использует CIDR 149.154.160.0/20 и 91.108.4.0/22. Nginx rate limit на webhook (30 r/s + burst 60). unattended-upgrades для регулярных security-патчей. Секреты в .env с правами 600, владелец deploy. Docker-контейнеры под non-root пользователем. Бэкапы в отдельный регион или провайдер.
   </FaqItem>
-  <FaqItem q="Как организовать docker-compose для Telegram-бота?">
-    Минимальный docker-compose.yml содержит три сервиса. Bot — собирается из Dockerfile, env_file: .env, ports 127.0.0.1:8080:8080, depends_on Redis и Postgres, restart unless-stopped. Redis — image redis:7-alpine, volume redis_data:/data. Postgres — image postgres:16-alpine, env_file .env, volume pg_data:/var/lib/postgresql/data. Поднимаем: docker compose up -d --build. Логи: docker compose logs -f bot. Перезапуск после деплоя: docker compose restart bot. Container-first подход даёт воспроизводимость: на ноутбуке и на VPS бот собирается одинаково.
+  <FaqItem q="Как организовать docker-compose.yml для Telegram-бота на VPS?">
+    Полный стек включает четыре сервиса. Сервис bot — собирается из Dockerfile, env_file .env, depends_on с condition service_healthy для postgres, healthcheck с wget на /health, restart unless-stopped. Сервис postgres — image postgres:16-alpine, volume pg_data на /var/lib/postgresql/data, healthcheck с pg_isready. Сервис redis — image redis:7-alpine, volume redis_data на /data. Сервис nginx — image nginx:1.27-alpine, ports 80 и 443, volumes с конфигом и /etc/letsencrypt. Все сервисы на внутренней сети internal, наружу торчит только nginx. Если предпочитаете nginx на хосте — уберите сервис nginx и пробросьте 127.0.0.1:8080:8080 у bot.
   </FaqItem>
-  <FaqItem q="Как организовать бэкапы и восстановление бота на VPS?">
-    Бот без бэкапа — бот, ждущий первой потери данных. Минимум четыре пункта. Дамп Postgres каждый день (pg_dump), хранить 7–30 дней. Снимок Redis (если в нём есть критичные данные) раз в час. Архивы загруженных пользователями файлов на S3-совместимое хранилище. Отдельный экземпляр бэкапов в другом регионе для защиты от потери дата-центра. Раз в квартал тренируем восстановление: разворачиваем бэкап на тестовом стенде. Бэкап, который вы не пробовали восстановить, не считается. Регулярная проверка ловит проблемы с битыми архивами заранее.
+  <FaqItem q="Как настроить webhook с secret_token и Let's Encrypt?">
+    После того как HTTPS поднят через certbot --nginx -d bot.example.com, регистрируем webhook через POST на `api.telegram.org/bot<TOKEN>/setWebhook` с параметрами url (`https://bot.example.com/webhook/<RANDOM_PATH>`), secret_token (64-символьный hex) и drop_pending_updates=true. В обработчике бота проверяйте заголовок X-Telegram-Bot-Api-Secret-Token — если не совпадает с secret_token, отбрасывайте запрос. RANDOM_PATH в URL — дополнительная защита от случайных сканеров. Auto-renewal сертификата работает через systemd timer, который ставится автоматически при установке certbot. Тестовое продление через certbot renew --dry-run.
   </FaqItem>
-  <FaqItem q="Что включает чек-лист безопасности Telegram-бота на VPS?">
-    Семь пунктов. Только SSH-ключи, без паролей. Файрвол: открыты только нужные порты (22, 80, 443). Fail2ban для ssh и nginx. Регулярные обновления (unattended-upgrades). Секреты в .env, права 600, владелец deploy. Бот-токен ротируем при компрометации (/revoke в BotFather, новый токен). Webhook-secret в setWebhook + проверка в обработчике через X-Telegram-Bot-Api-Secret-Token. Это базовая гигиена, которая защищает от 90% типовых атак: подбор паролей по ssh, брутфорс webhook, сканирование портов.
+  <FaqItem q="Как организовать бэкапы Postgres из Docker и тестовое восстановление?">
+    Скрипт backup.sh делает docker compose exec postgres pg_dump, gzip-сжимает результат, заливает в S3-совместимое хранилище (Yandex Object Storage или Selectel S3) через aws s3 cp с endpoint-url. Cron-задача 0 3 * * * запускает скрипт ежедневно в 3 ночи. Retention — 14-30 дней, старые бэкапы удаляются автоматически по дате в имени файла. Раз в квартал делайте тестовое восстановление на отдельном VPS: скачиваете бэкап, gunzip, psql restore в чистую БД. Бэкап, который вы не пробовали восстановить, не считается. Альтернатива самописному скрипту — managed PostgreSQL (Yandex Managed PostgreSQL), там бэкапы и point-in-time recovery встроены за 2000-5000 руб/мес.
+  </FaqItem>
+  <FaqItem q="Какая ежемесячная стоимость владения VPS-ботом в России?">
+    Маленький бот без БД — 500-1100 руб/мес (VPS 500-1000 + домен 15 + S3 backup 30). Средний бот с Postgres и Redis — 1700-3200 руб/мес. Бот с AI-интеграцией или Mini App — 4500-8500 руб/мес. Высоконагруженный (50k+ DAU, кластер) — от 11000 руб/мес. Это без учёта managed-сервисов: Yandex Managed PostgreSQL добавляет 2000-5000 руб/мес, но снимает headache бэкапов и патчей. Выделенный мониторинг (Grafana Cloud, Uptime Kuma на отдельном VPS) — 500-1500 руб/мес. Регистрация домена .ru — около 200 руб/год, .com — около 1000 руб/год.
   </FaqItem>
 </Faq>
 
 <EndCTA>
-  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка проекта в течение рабочего дня.
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка в течение рабочего дня.
 </EndCTA>

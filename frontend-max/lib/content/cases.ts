@@ -18,6 +18,10 @@ export const casesContent: CasesContent = {
       metric: { value: "−60%", label: "Время согласования заявки" },
       tech: ["MAX Bot API", "1С:ЗУП", "PostgreSQL", "Go"],
       visual: "chat",
+      image: {
+        src: "/images/cases/max-hr-vacation-approval-chat.png",
+        alt: "Интерфейс HR-бота в MAX для отпусков, согласований и онбординга",
+      },
       details: {
         challenge: [
           "В компании 850+ сотрудников и 9 юрлиц — заявки терялись в почте и Excel.",
@@ -48,6 +52,10 @@ export const casesContent: CasesContent = {
       metric: { value: "80%", label: "Авторешений в первой линии" },
       tech: ["GigaChat", "RAG", "amoCRM", "Python"],
       visual: "chat",
+      image: {
+        src: "/images/cases/max-support-finhelp-ai-chat.png",
+        alt: "Интерфейс AI-ассистента ФинПомощник в MAX для поддержки первой линии",
+      },
       details: {
         challenge: [
           "Контакт-центр захлёбывался от типовых вопросов про лимиты и комиссии.",
@@ -78,6 +86,10 @@ export const casesContent: CasesContent = {
       metric: { value: "+30%", label: "Доля онлайн-записи" },
       tech: ["MAX Mini App", "MIS API", "СБП", "Next.js"],
       visual: "schedule",
+      image: {
+        src: "/images/cases/max-booking-derma-miniapp.png",
+        alt: "Мини-приложение Derma+ в MAX для записи пациента и оплаты приема",
+      },
       details: {
         challenge: [
           "Колл-центр работал в 1 смену — поток заявок вне рабочего времени терялся.",
@@ -108,6 +120,10 @@ export const casesContent: CasesContent = {
       metric: { value: "×2", label: "Частота повторных покупок" },
       tech: ["MAX Bot API", "СБП", "iiko", "Redis"],
       visual: "payment",
+      image: {
+        src: "/images/cases/max-loyalty-smartcup-payment-chat.png",
+        alt: "Бот программы лояльности SmartCup в MAX с бонусами и оплатой по СБП",
+      },
       details: {
         challenge: [
           "Старая пластиковая карта лояльности забывалась дома, активаций — единицы.",
@@ -138,6 +154,10 @@ export const casesContent: CasesContent = {
       metric: { value: "+30%", label: "Конверсия в покупку" },
       tech: ["MAX Bot API", "amoCRM", "GA4", "TypeScript"],
       visual: "miniapp",
+      image: {
+        src: "/images/cases/max-quiz-cosmoshop-beauty-chat.png",
+        alt: "Бьюти-бот CosmoShop в MAX с квизом для подбора косметики",
+      },
       details: {
         challenge: [
           "ROI рекламы упал — пользователи уходили с лендинга, не дойдя до выбора.",
@@ -168,6 +188,10 @@ export const casesContent: CasesContent = {
       metric: { value: "−50%", label: "Звонков в поддержку" },
       tech: ["MAX Bot API", "ЯндексКарты", "1С:Бухгалтерия", "Go"],
       visual: "dashboard",
+      image: {
+        src: "/images/cases/max-delivery-paneconomic-lunch-chat.png",
+        alt: "Бот доставки обедов ПанЭкономик в MAX с меню, лимитами и статусом курьера",
+      },
       details: {
         challenge: [
           "Заказы оформлялись в Google-форме, лимиты считали вручную в Excel.",

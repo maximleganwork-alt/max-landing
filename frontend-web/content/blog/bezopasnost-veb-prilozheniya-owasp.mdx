@@ -5,95 +5,699 @@ date: "2026-01-18"
 tags: ["сайт", "безопасность", "OWASP"]
 ---
 
-OWASP Top 10 — это список самых частых уязвимостей веб-приложений. Большинство компрометаций сайтов в РФ — это банальный SQL-injection, кривая авторизация или отсутствие защиты от перебора. Разберём актуальный список простыми словами и приведём практические рекомендации.
+OWASP Top 10 — это рейтинг самых разрушительных классов уязвимостей веб-приложений, который Open Web Application Security Project обновляет раз в несколько лет на основе данных сотен тысяч пентестов и багбаунти-репортов. Текущая редакция датирована 2021 годом, и пока (на момент 2026) она остаётся актуальной — категории сместились, но суть та же. Большинство компрометаций сайтов в РФ — это банальный SQL-injection через формы поиска, кривая авторизация в админке, предсказуемые ID объектов и устаревший npm-пакет в node_modules. В этом посте — детальный разбор каждой из десяти категорий с примерами кода атак, защитой, реальными CVE 2024-2025 и большим разделом про Content Security Policy в современном Next.js.
 
-## A01 — Сломанный контроль доступа
+Материал рассчитан на разработчиков, тех-лидов и security-инженеров, которые проектируют и поддерживают веб-приложения на Node.js, Go, Python, Java или PHP. Примеры кода даны на TypeScript/Node и Go там, где это уместно — принципы переносятся на любой язык один в один.
 
-Самая частая уязвимость. Пользователь A через подмену ID в URL получает данные пользователя B. Решение:
+## A01 — Broken Access Control: Сломанный контроль доступа
 
-- Все запросы к данным проверяют принадлежность объекта текущему пользователю на бэкенде.
-- Никогда не доверяйте параметру `userId` из клиента — берите ID из сессии или JWT.
-- Внутри API используйте *RBAC* или *ABAC*; не хардкодьте роли в коде фронта.
+Эта категория с 2021 года заняла первое место и удерживает его. Суть проста: сервер не проверяет, что пользователь имеет право на запрашиваемый ресурс. Самый частый подвид — IDOR (Insecure Direct Object Reference): пользователь A меняет в URL `userId=123` на `userId=124` и получает данные пользователя B. Сюда же входят: отсутствие проверки роли (обычный юзер вызывает админский эндпоинт), force browsing (доступ к скрытым URL без линков из UI), CORS-обход, обход через путь (path traversal), небезопасные методы (PUT/DELETE доступны без авторизации).
 
-## A02 — Криптография
+Вторая распространённая проблема — проверка прав на клиенте. «Кнопка удалить» спрятана в React по `if (user.role === "admin")`, но эндпоинт `DELETE /api/users/:id` не проверяет роль на сервере. Любой может открыть DevTools, увидеть запрос и повторить его руками.
 
-- Все соединения по **HTTPS** (TLS 1.2+; в идеале 1.3).
-- Пароли — *bcrypt*, *argon2id*; никогда не SHA или MD5.
-- Секреты (ключи API, токены) — в переменных окружения или *secret manager*, не в коде и не в Git.
-- Бэкапы и логи тоже шифруются.
+Пример уязвимого кода (Express):
 
-## A03 — Инъекции
+```ts
+// ПЛОХО: нет проверки владельца
+app.get("/api/orders/:id", async (req, res) => {
+  const order = await db.order.findUnique({ where: { id: req.params.id } });
+  res.json(order);
+});
+```
 
-SQL-injection, NoSQL-injection, command-injection. Лечится одним правилом: **никогда не конкатенируйте пользовательский ввод в команды**. Используйте параметризованные запросы (prepared statements в Postgres, подготовленные выражения в Go `database/sql`, ORM с биндингами).
+Любой авторизованный пользователь, перебирая `:id`, читает чужие заказы. Атака — обычный `for` цикл с инкрементом ID и логированием 200-х ответов.
 
-## A04 — Небезопасный дизайн
+Защита — middleware с обязательной проверкой принадлежности:
 
-Самая обширная категория — про логические ошибки. Например, корзина считается на клиенте, и можно изменить цену в JS. Лечится моделированием угроз (*threat modeling*) на этапе проектирования — спросите для каждого экрана: «что злоумышленник может подменить и каковы последствия».
+```ts
+// ХОРОШО: проверка владельца + RBAC
+app.get("/api/orders/:id", requireAuth, async (req, res) => {
+  const order = await db.order.findUnique({ where: { id: req.params.id } });
+  if (!order) return res.status(404).end();
+  if (order.userId !== req.user.id && req.user.role !== "admin") {
+    return res.status(403).json({ error: "forbidden" });
+  }
+  res.json(order);
+});
+```
 
-## A05 — Неверная конфигурация
+Дополнительные практики: использовать UUIDv4 или ULID вместо инкрементальных ID (атака усложняется на порядки), строить ABAC/RBAC через единый policy-движок (Casbin, OPA), писать интеграционные тесты на негативные сценарии («юзер B не может прочитать заказ юзера A»).
 
-- Закрыты ли `debug=true` и подробные стек-трейсы в проде?
-- Закрыты ли админ-панели по IP или VPN?
-- Удалены ли дефолтные учётки и тестовые ключи?
-- Включены ли security-заголовки: `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Strict-Transport-Security`, `Content-Security-Policy`?
+Реальный кейс 2024 года — серия отчётов на HackerOne про IDOR в популярных SaaS, где смена `team_id` в URL давала доступ к чужим инвойсам. По данным OWASP, 94% протестированных приложений в 2021-2024 содержали хотя бы одну форму broken access control.
 
-<InlineCTA>Проведём аудит безопасности веб-проекта</InlineCTA>
+## A02 — Cryptographic Failures: Криптографические провалы
 
-## A06 — Уязвимые компоненты
+Прежнее название — Sensitive Data Exposure. Сюда входит всё, что связано с защитой данных в покое и в передаче: слабые алгоритмы (MD5, SHA1 для паролей), хранение паролей в plaintext или в обратимом виде, отсутствие TLS, использование самоподписанных сертификатов в проде, утечка ключей в Git, слабые TLS-ciphers (RC4, 3DES), отсутствие forward secrecy.
 
-Старые версии библиотек — типовой источник дыр. Решение:
+Классический антипаттерн — SHA1 или MD5 для паролей:
 
-- *npm audit*, *Dependabot* или *Renovate* для автоматического обновления.
-- Не тащите случайные пакеты «потому что нашёл на StackOverflow».
-- Для критичных проектов — *SCA*-сканер (Snyk, Trivy).
+```ts
+// ПЛОХО: MD5 ломается за секунды на rainbow tables
+import crypto from "crypto";
+const hash = crypto.createHash("md5").update(password).digest("hex");
+```
 
-## A07 — Аутентификация
+Атакующий с дампом БД скачивает rainbow table на 14 ГБ и за вечер восстанавливает 80% паролей. Соль не спасёт, если алгоритм быстрый: MD5 на современной GPU считается со скоростью 200 миллиардов хэшей в секунду.
 
-- Защита от перебора: **rate-limit** на `/login` и `/reset-password` (Redis token-bucket, 5–10 попыток в минуту).
-- *2FA* для админских аккаунтов.
-- Сессии — *httpOnly*, *Secure*, *SameSite=Strict* или *Lax*; токены ротируются.
-- При выходе сессия инвалидируется на сервере, не только удаляется кука.
+Правильно — argon2id (победитель Password Hashing Competition) или bcrypt:
 
-## A08 — Целостность данных
+```ts
+// ХОРОШО: argon2id с разумными параметрами
+import argon2 from "argon2";
 
-- Подпись/проверка вебхуков от внешних сервисов (ЮKassa, Telegram, amoCRM).
-- *Subresource Integrity* для внешних JS-библиотек.
-- Подпись и проверка релизов в CI.
+const hash = await argon2.hash(password, {
+  type: argon2.argon2id,
+  memoryCost: 19456, // 19 MiB
+  timeCost: 2,
+  parallelism: 1,
+});
 
-## A09 — Логирование и мониторинг
+// Проверка
+const ok = await argon2.verify(hash, password);
+```
 
-Без логов вы не узнаете о компрометации, пока вам не позвонят. Минимум:
+Параметры argon2id подбираются под железо: цель — около 100-500 мс на хэширование одного пароля. Меньше — слишком быстро для атакующего, больше — лагает форма логина.
 
-- Все попытки логина (успех + провал) с IP и user-agent.
-- Все изменения прав и ролей.
-- Алерты на необычные паттерны: всплеск 401, всплеск 500, аномалии трафика.
+По TLS: только TLS 1.2+, лучше 1.3; отключить старые ciphers через nginx/caddy; HSTS-заголовок с `max-age=63072000; includeSubDomains; preload`; регулярная проверка через ssllabs.com (цель — A+).
 
-## A10 — SSRF
+Секреты: никогда в Git. Используйте Vault, AWS Secrets Manager, Yandex Lockbox, doppler.com. На худой конец — `.env` в `.gitignore` плюс sealed-secrets в k8s. Если ключ всё-таки утёк — немедленно ротируйте, не «закоммитим удаление».
 
-*Server-Side Request Forgery* — когда сервер по запросу пользователя ходит на произвольный URL, и злоумышленник заставляет его лезть во внутреннюю сеть. Защита: явный *whitelist* доменов, фильтрация частных IP-диапазонов, отдельная подсеть для исходящих запросов.
+Реальный CVE: CVE-2024-31497 (PuTTY) — генерация ECDSA-подписей с предсказуемым nonce, что позволило восстановить приватный ключ из 60 подписей. Урок: даже зрелые криптобиблиотеки иногда содержат провалы — следите за advisory вашего стека.
 
-## Что в сухом остатке
+## A03 — Injection: Инъекции
 
-90% инцидентов закрываются базовой гигиеной: HTTPS, параметризованные запросы, RBAC, rate-limit, актуальные зависимости, security-заголовки и логи. Внедряйте *threat modeling* на этапе проектирования, а не аудит за неделю до релиза. Безопасность — это не один пункт чек-листа, а культура разработки.
+SQL-injection, NoSQL-injection, LDAP-injection, XPath-injection, OS command injection, ORM-injection, prompt-injection в LLM-фичах. Категория опустилась с первого места на третье не потому, что её стало меньше, а потому что современные фреймворки и ORM закрывают её по умолчанию. Но как только разработчик пишет «raw SQL для оптимизации» или собирает shell-команду конкатенацией — дыра возвращается.
+
+SQL-injection в Node.js (классика):
+
+```ts
+// ПЛОХО: конкатенация пользовательского ввода
+app.get("/search", async (req, res) => {
+  const q = req.query.q;
+  const sql = `SELECT * FROM products WHERE name LIKE '%${q}%'`;
+  const rows = await db.raw(sql);
+  res.json(rows);
+});
+```
+
+Атака: `?q=%27%20UNION%20SELECT%20email,password%20FROM%20users--` — и в ответе летит дамп пользователей. UNION-based SQLi автоматизируется sqlmap-ом за минуты.
+
+Защита — параметризованные запросы:
+
+```ts
+// ХОРОШО: prepared statement через драйвер
+const rows = await db.query(
+  "SELECT * FROM products WHERE name LIKE $1",
+  [`%${q}%`]
+);
+
+// Или через ORM (Prisma)
+const rows = await prisma.product.findMany({
+  where: { name: { contains: q } },
+});
+```
+
+OS command injection — отдельный класс, особенно в Node.js с `child_process.exec`:
+
+```ts
+// ПЛОХО: shell интерпретирует метасимволы
+import { exec } from "child_process";
+exec(`convert ${userFile} -resize 200x200 thumb.jpg`);
+// Атака: userFile = "img.png; rm -rf /; #"
+```
+
+Защита — `execFile` или `spawn` с массивом аргументов (без shell-интерпретации):
+
+```ts
+// ХОРОШО: аргументы передаются как массив
+import { execFile } from "child_process";
+execFile("convert", [userFile, "-resize", "200x200", "thumb.jpg"]);
+```
+
+Плюс валидация имени файла по белому списку расширений и регэкспу (`/^[a-zA-Z0-9_-]+\.(png|jpg|webp)$/`).
+
+Реальный CVE 2024: CVE-2024-4577 — argument injection в PHP-CGI на Windows. Удалённое выполнение кода через специально сформированные query-параметры. Активно эксплуатировалось в дикой природе, попало в CISA Known Exploited Vulnerabilities. Урок: даже «надёжные» древние стеки иногда выкатывают RCE-класса дыры.
+
+<InlineCTA>Аудит безопасности веб-приложения с отчётом и планом исправлений</InlineCTA>
+
+## A04 — Insecure Design: Небезопасный дизайн
+
+Самая неоднозначная категория. Здесь не ошибка реализации, а ошибка проектирования: бизнес-логика построена так, что её можно злоупотребить, даже если код написан идеально. Примеры: корзина считается на клиенте и можно подменить цену, регистрация без подтверждения email позволяет создать тысячи аккаунтов, восстановление пароля через секретный вопрос «девичья фамилия матери», денежный перевод без идемпотентного ключа допускает race condition.
+
+Race condition в переводе денег — классика:
+
+```ts
+// ПЛОХО: чтение и запись в две операции без блокировки
+async function transfer(fromId: string, toId: string, amount: number) {
+  const from = await db.account.findUnique({ where: { id: fromId } });
+  if (from.balance < amount) throw new Error("insufficient");
+  await db.account.update({ where: { id: fromId }, data: { balance: from.balance - amount } });
+  await db.account.update({ where: { id: toId }, data: { balance: { increment: amount } } });
+}
+```
+
+Атака: 50 параллельных запросов на перевод одной и той же суммы. Все 50 пройдут проверку `from.balance < amount`, потому что обновление ещё не записалось. Баланс уйдёт в минус, атакующий получит деньги «из воздуха».
+
+Защита — транзакция с пессимистичной блокировкой и атомарным условием:
+
+```ts
+// ХОРОШО: транзакция + атомарный декремент с проверкой
+await db.$transaction(async (tx) => {
+  const updated = await tx.account.updateMany({
+    where: { id: fromId, balance: { gte: amount } },
+    data: { balance: { decrement: amount } },
+  });
+  if (updated.count === 0) throw new Error("insufficient");
+  await tx.account.update({
+    where: { id: toId },
+    data: { balance: { increment: amount } },
+  });
+});
+```
+
+Плюс throttling на уровне аккаунта (один перевод в N секунд), идемпотентный ключ (`Idempotency-Key` в заголовке), audit-лог с до/после-балансами.
+
+Методология: STRIDE (Spoofing, Tampering, Repudiation, Information disclosure, Denial of service, Elevation of privilege) — для каждой фичи на этапе дизайна пройтись по шести категориям. Результат — short-list угроз и митигаций до того, как код написан. Альтернативы — PASTA, LINDDUN. На практике достаточно полчаса воркшопа с тех-лидом и продактом перед каждой крупной фичей.
+
+## A05 — Security Misconfiguration: Неверная конфигурация
+
+Самая «дешёвая» уязвимость для атакующего и самая обидная для команды. Примеры: открытые админки на дефолтных URL (`/admin`, `/phpmyadmin`), дефолтные пароли (`admin/admin`), `DEBUG=True` в проде с полным стек-трейсом и переменными окружения, открытый Elasticsearch без auth на 9200, S3-бакет с правами public-read, незакрытые порты СУБД наружу, отсутствие security-заголовков, забытые тестовые эндпоинты.
+
+Особенно болезненный случай — misconfigured CORS при credentials:
+
+```ts
+// ПЛОХО: разрешает любому сайту слать запросы с куками юзера
+app.use(cors({
+  origin: "*",
+  credentials: true,
+}));
+```
+
+Браузер технически блокирует `Access-Control-Allow-Origin: *` вместе с `credentials: true`, но многие фреймворки рефлектят `Origin` из запроса:
+
+```ts
+// ПЛОХО: рефлект Origin = разрешено всем
+app.use(cors({
+  origin: (origin, cb) => cb(null, origin),
+  credentials: true,
+}));
+```
+
+Любой атакующий сайт `evil.com` через `fetch("https://your-app.com/api/me", { credentials: "include" })` читает приватные данные жертвы.
+
+Правильно — явный allowlist:
+
+```ts
+// ХОРОШО: явный список доверенных origin
+const ALLOWED = new Set([
+  "https://app.example.com",
+  "https://admin.example.com",
+]);
+
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // server-to-server
+    cb(null, ALLOWED.has(origin));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  maxAge: 600,
+}));
+```
+
+Чек-лист конфигурации перед релизом: убраны debug-флаги; стек-трейсы не уходят клиенту (только request-id для саппорта); удалены тестовые учётки; админки за VPN или basic-auth на nginx; Postgres/Redis не торчат в интернет (only `127.0.0.1` или внутренняя сеть docker); сменены дефолтные пароли БД; включены все security-заголовки (см. ниже раздел про HTTP-headers); регулярный скан портов через nmap/masscan со стороны.
+
+## A06 — Vulnerable and Outdated Components: Уязвимые зависимости
+
+Современное веб-приложение — это сотни npm-пакетов, и каждый — потенциальный вектор. Уязвимость в популярной библиотеке (lodash, axios, ws, jsonwebtoken) автоматически становится уязвимостью вашего сайта. Атакующие знают это и активно мониторят CVE-фиды, чтобы эксплуатировать сайты до того, как разработчики обновятся.
+
+Базовые инструменты: `npm audit` или `pnpm audit` в CI (fail на high+); GitHub Dependabot или Renovate (автоматические PR с обновлениями); Snyk, Trivy, OSV-Scanner для глубокого SCA; GitHub Advisory Database (`https://github.com/advisories`) для ручных проверок; для Go — `govulncheck`; для Python — `pip-audit`.
+
+Минимальная настройка в `package.json`:
+
+```json
+{
+  "scripts": {
+    "audit:ci": "npm audit --audit-level=high --omit=dev"
+  }
+}
+```
+
+И шаг в GitHub Actions:
+
+```yaml
+- name: Audit dependencies
+  run: npm run audit:ci
+```
+
+Renovate config (`.github/renovate.json`):
+
+```json
+{
+  "extends": ["config:recommended", ":dependencyDashboard"],
+  "vulnerabilityAlerts": { "enabled": true, "labels": ["security"] },
+  "schedule": ["before 5am on Monday"],
+  "packageRules": [
+    { "matchUpdateTypes": ["patch"], "automerge": true },
+    { "matchPackagePatterns": ["lint", "prettier"], "automerge": true }
+  ]
+}
+```
+
+Реальные CVE последних лет: CVE-2024-3094 (xz utils backdoor — см. раздел A08), CVE-2024-21538 (cross-spawn ReDoS), CVE-2024-29415 (ip-package SSRF bypass), CVE-2025-29927 (Next.js — обход middleware через спецзаголовок `x-middleware-subrequest`, патч в 14.2.25 / 15.2.3 — обновлять немедленно если у вас старее). Урок: подписка на advisory вашего фреймворка и runtime — обязательна.
+
+## A07 — Identification and Authentication Failures: Сбои аутентификации
+
+Слабые пароли, отсутствие rate-limit на `/login`, незащищённые JWT (`alg: none`, слабый секрет), отсутствие MFA, session fixation, длинные TTL сессий без ротации, восстановление пароля через предсказуемые токены, «remember me» на 365 дней без ротации.
+
+Credential stuffing — типовая атака 2024-2026: атакующий берёт дамп паролей из утечки сервиса X (их сотни в открытом доступе), прогоняет через ваш `/login` и заходит в 1-3% аккаунтов, где люди использовали тот же пароль. Без rate-limit и без проверки в haveibeenpwned.com защититься нельзя.
+
+Базовый rate-limit в Express через express-rate-limit + Redis:
+
+```ts
+// ХОРОШО: лимит 10 попыток за 15 минут на IP, 5 на email
+import rateLimit from "express-rate-limit";
+import RedisStore from "rate-limit-redis";
+
+const loginLimiter = rateLimit({
+  store: new RedisStore({ sendCommand: (...args) => redis.call(...args) }),
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => `login:ip:${req.ip}`,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const emailLimiter = rateLimit({
+  store: new RedisStore({ sendCommand: (...args) => redis.call(...args) }),
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyGenerator: (req) => `login:email:${req.body?.email ?? "unknown"}`,
+});
+
+app.post("/login", loginLimiter, emailLimiter, loginHandler);
+```
+
+Дополнительно: блокировка аккаунта после N провалов с email-уведомлением владельцу; обязательный MFA для админских ролей (TOTP через `otplib` или WebAuthn); проверка пароля при регистрации против списка топ-10000 утёкших паролей; passwordless через magic-link для сайтов с низкой частотой логина; JWT с коротким TTL (15 минут) + refresh-token с ротацией и revocation list.
+
+JWT-ловушки:
+
+```ts
+// ПЛОХО: верификация без явного указания алгоритма
+jwt.verify(token, secret); // принимает alg:none и HS256-через-публичный-ключ-RSA
+
+// ХОРОШО: явный алгоритм
+jwt.verify(token, secret, { algorithms: ["HS256"] });
+```
+
+Сессионные куки — обязательно `HttpOnly`, `Secure`, `SameSite=Lax` (или `Strict` для админок), `__Host-` префикс для дополнительной защиты от поддоменных атак.
+
+## A08 — Software and Data Integrity Failures: Целостность ПО и данных
+
+Категория появилась в 2021 после серии supply-chain атак (SolarWinds, event-stream). Суть: код или данные доставляются без проверки целостности — и атакующий может подменить пакет, образ, обновление, конфиг. Сюда же insecure deserialization (PHP unserialize, Java readObject, Python pickle).
+
+Showcase 2024 — CVE-2024-3094 (xz utils backdoor). Злоумышленник под ником «Jia Tan» в течение двух лет постепенно становился мейнтейнером популярной библиотеки сжатия `xz/liblzma`, которая транзитивно линкуется в OpenSSH через systemd на большинстве дистрибутивов Linux. В версиях 5.6.0 и 5.6.1 он встроил бэкдор: специально сформированные тестовые файлы в репозитории при сборке через autotools модифицировали shared object и добавляли проверку публичного ключа атакующего в SSH-аутентификацию. Любой сервер с этими версиями стал уязвим к удалённому входу для держателя приватного ключа. Случайно обнаружено инженером Microsoft Andres Freund по 500-миллисекундной задержке логина и аномалии в Valgrind. Patch — откат на 5.4.x, дистрибутивы выкатили обновления за 48 часов.
+
+Уроки CVE-2024-3094:
+- Социальная инженерия мейнтейнерства — реальный вектор, не только код.
+- Полное доверие транзитивным зависимостям опасно: glibc, OpenSSL, systemd — каждый тянет десятки пакетов с горсткой мейнтейнеров.
+- SBOM (Software Bill of Materials) обязателен для критичных систем — генерируйте через `syft`, храните вместе с релизом.
+- Reproducible builds: если бинарь, собранный из исходников, отличается от опубликованного — звоночек.
+- Sigstore / cosign для подписи контейнеров и артефактов.
+
+Insecure deserialization в Node.js менее распространён (JSON безопаснее), но выстреливает с библиотеками типа `node-serialize`:
+
+```ts
+// ПЛОХО: serialize с функциями = RCE при unserialize
+import serialize from "node-serialize";
+const data = serialize.unserialize(req.body); // RCE если в body есть IIFE
+```
+
+Защита — никогда не десериализуйте недоверенные данные форматами с поддержкой функций/классов. JSON + Zod-валидация — стандарт.
+
+```ts
+// ХОРОШО: JSON + строгая схема
+import { z } from "zod";
+
+const Schema = z.object({
+  name: z.string().min(1).max(100),
+  age: z.number().int().min(0).max(150),
+});
+
+const data = Schema.parse(JSON.parse(req.body));
+```
+
+Для CI: подписывайте коммиты через GPG/Sigstore, требуйте signed commits в branch protection, генерируйте SBOM на каждый релиз, храните контрольные суммы Docker-образов в Cosign.
+
+## A09 — Security Logging and Monitoring Failures: Логи и мониторинг
+
+В среднем атакующий находится в скомпрометированной системе 200+ дней до обнаружения. Главная причина — нет логов или логи никто не смотрит. Категория не про прямую уязвимость, а про невозможность её детектировать.
+
+Минимальный набор событий для аудит-лога:
+- Попытки логина: успех + провал, IP, user-agent, timestamp.
+- Изменения прав/ролей: кто кому что выдал/отозвал, до/после.
+- Доступ к чувствительным данным: чтение PII, экспорт базы, скачивание отчётов.
+- Изменения конфигурации, secrets, feature flags.
+- Финансовые операции: транзакции, переводы, возвраты.
+- Нестандартные ошибки: 500, 401-всплески, anomalies в latency.
+
+Минимальный pipeline — структурированные логи (JSON) + ELK/Loki/Grafana + алерты в Telegram/PagerDuty. Для бюджетных команд — Sentry для ошибок + хостовый rsyslog с retention 90+ дней + ручной grep раз в неделю. Для зрелых — SIEM (Wazuh, Splunk, ElasticSecurity) с корреляционными правилами.
+
+Пример middleware для Express (структурированный лог + request-id):
+
+```ts
+import pino from "pino";
+import { randomUUID } from "crypto";
+
+const logger = pino({ level: "info" });
+
+app.use((req, res, next) => {
+  const reqId = req.headers["x-request-id"] ?? randomUUID();
+  req.log = logger.child({ reqId, ip: req.ip, ua: req.get("user-agent") });
+  res.setHeader("X-Request-Id", String(reqId));
+  const start = Date.now();
+  res.on("finish", () => {
+    req.log.info({
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      ms: Date.now() - start,
+    }, "request");
+  });
+  next();
+});
+```
+
+Алерты-минимум: всплеск 500 (+200% от baseline за 5 минут), всплеск 401/403 (попытка перебора), новый user-agent на админ-эндпоинте, географическая аномалия логина (логин из РФ → через час из Китая).
+
+Что не логируется никогда: пароли, полные токены, тела платёжных запросов с CVV, JWT целиком (только хэш или первые символы), любые PII без явной необходимости. Маскирование на уровне logger — обязательно (`pino-redact` или ручной serializer).
+
+<InlineCTA>Настроим логи, мониторинг и алерты под вашу инфраструктуру</InlineCTA>
+
+## A10 — Server-Side Request Forgery (SSRF)
+
+SSRF — когда сервер по запросу пользователя делает HTTP/TCP-запрос на произвольный URL. Атакующий заставляет сервер ходить во внутреннюю сеть: к metadata-сервисам облака, к Redis/Postgres на `localhost`, к internal-API без auth. Особенно опасно в облаке: AWS, Yandex Cloud, GCP отдают IAM-credentials через `169.254.169.254/latest/meta-data/` без аутентификации — кому угодно с доступом к этому endpoint.
+
+Типовой уязвимый код — превью ссылки или загрузка по URL:
+
+```ts
+// ПЛОХО: fetch на любой URL от пользователя
+app.post("/api/preview", async (req, res) => {
+  const { url } = req.body;
+  const response = await fetch(url);
+  const html = await response.text();
+  res.json({ title: extractTitle(html) });
+});
+```
+
+Атаки:
+- `url=http://169.254.169.254/latest/meta-data/iam/security-credentials/` — кража IAM-токена облака.
+- `url=http://localhost:6379/` + хитрый payload через CRLF — выполнение команд в Redis.
+- `url=http://internal-admin.local/users` — доступ к internal-API.
+- `url=file:///etc/passwd` — чтение локальных файлов (если поддерживается).
+- DNS rebinding: домен резолвится сначала в публичный IP (проверка пройдена), потом в `127.0.0.1` (запрос ушёл во внутрь).
+
+Защита — отдельный fetch-wrapper с allowlist схем, deny private IPs и таймаутами:
+
+```ts
+// ХОРОШО: безопасный fetch с проверками
+import dns from "node:dns/promises";
+import net from "node:net";
+import ipaddr from "ipaddr.js";
+
+const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
+const PRIVATE_RANGES = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+  "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10"];
+
+async function safeFetch(rawUrl: string) {
+  const url = new URL(rawUrl);
+  if (!ALLOWED_PROTOCOLS.has(url.protocol)) {
+    throw new Error("protocol not allowed");
+  }
+  // Резолвим хост и проверяем все IP
+  const records = await dns.lookup(url.hostname, { all: true });
+  for (const r of records) {
+    const addr = ipaddr.parse(r.address);
+    for (const range of PRIVATE_RANGES) {
+      const [net, bits] = ipaddr.parseCIDR(range);
+      if (addr.kind() === net.kind() && addr.match(net, bits)) {
+        throw new Error(`private IP blocked: ${r.address}`);
+      }
+    }
+  }
+  // Pin IP, чтобы защититься от DNS rebinding
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    return await fetch(rawUrl, {
+      signal: controller.signal,
+      redirect: "manual", // редиректы валидируем отдельно
+      headers: { "User-Agent": "MyApp-LinkPreview/1.0" },
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+```
+
+Дополнительные меры:
+- Выделенный egress-proxy (squid с allowlist) для всех исходящих запросов от приложения.
+- На AWS — IMDSv2 (требует токен через PUT-запрос, защищает от классического SSRF).
+- На Yandex Cloud — security-group, запрещающая исходящие к metadata-IP с большинства подов.
+- Network policies в k8s: запретить egress в `169.254.0.0/16` и приватные подсети.
+
+## Content Security Policy (CSP) — большой раздел
+
+CSP — это HTTP-заголовок (или meta-тег), который сообщает браузеру белый список источников контента: откуда можно грузить скрипты, стили, картинки, шрифты, к каким хостам разрешён `fetch`/`XHR`/WebSocket. Цель — убить целый класс атак: stored XSS, reflected XSS, data-injection, clickjacking, mixed content. Даже если атакующий смог инжектнуть `<script>` на страницу, браузер откажется его выполнять, если CSP не разрешает.
+
+Базовые директивы:
+
+- `default-src` — fallback для всего, что не указано явно.
+- `script-src` — разрешённые источники JS.
+- `style-src` — разрешённые источники CSS.
+- `img-src` — разрешённые источники картинок.
+- `font-src` — шрифты.
+- `connect-src` — `fetch`, `XHR`, WebSocket, `EventSource`.
+- `frame-src` / `child-src` — что можно встраивать в iframe.
+- `frame-ancestors` — кто может встраивать НАС в iframe (заменяет X-Frame-Options).
+- `form-action` — куда можно отправлять формы.
+- `base-uri` — что можно ставить в `<base href>` (защита от base-tag injection).
+- `object-src 'none'` — отключить Flash/applet (всегда `none`).
+- `upgrade-insecure-requests` — автоматически апгрейдить http в https.
+- `block-all-mixed-content` — жёстко блокировать mixed content.
+- `report-uri` / `report-to` — куда слать отчёты о нарушениях.
+
+Три стратегии защиты скриптов:
+
+1. **Allowlist** — перечислить домены: `script-src 'self' https://cdn.example.com https://www.googletagmanager.com`. Просто, но дырявит CSP: любой XSS на белом домене ломает защиту, и Google CDN исторически содержал JSONP-эндпоинты, через которые обходили allowlist.
+
+2. **Hash** — хэш от inline-скрипта: `script-src 'sha256-abc123...'`. Подходит для статики с фиксированными скриптами (Hugo, Jekyll). Не подходит для динамических SPA.
+
+3. **Nonce** — одноразовый токен, генерируемый на каждый запрос: `script-src 'nonce-randomBase64'`. Сервер вставляет тот же nonce в `<script nonce="randomBase64">`. Атакующий не может предугадать nonce — inline-инъекция не выполнится. Это рекомендованный Google «strict CSP» подход.
+
+Strict CSP в Next.js 15 через middleware:
+
+```ts
+// middleware.ts
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+
+export function middleware(request: NextRequest) {
+  const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
+
+  const cspHeader = `
+    default-src 'self';
+    script-src 'self' 'nonce-${nonce}' 'strict-dynamic' https: 'unsafe-inline';
+    style-src 'self' 'nonce-${nonce}';
+    img-src 'self' blob: data: https:;
+    font-src 'self' data: https://fonts.gstatic.com;
+    connect-src 'self' https://mc.yandex.ru https://api.example.com;
+    frame-ancestors 'none';
+    form-action 'self';
+    base-uri 'self';
+    object-src 'none';
+    upgrade-insecure-requests;
+    report-uri /api/csp-report;
+  `.replace(/\s{2,}/g, " ").trim();
+
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-nonce", nonce);
+  requestHeaders.set("Content-Security-Policy", cspHeader);
+
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
+  response.headers.set("Content-Security-Policy", cspHeader);
+  return response;
+}
+
+export const config = {
+  matcher: [
+    {
+      source: "/((?!api|_next/static|_next/image|favicon.ico).*)",
+      missing: [
+        { type: "header", key: "next-router-prefetch" },
+        { type: "header", key: "purpose", value: "prefetch" },
+      ],
+    },
+  ],
+};
+```
+
+Чтение nonce в layout:
+
+```tsx
+// app/layout.tsx
+import { headers } from "next/headers";
+import Script from "next/script";
+
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
+  return (
+    <html lang="ru">
+      <body>
+        {children}
+        <Script src="https://mc.yandex.ru/metrika/tag.js" nonce={nonce} strategy="afterInteractive" />
+      </body>
+    </html>
+  );
+}
+```
+
+Здесь `'strict-dynamic'` означает: «если скрипт с правильным nonce загрузил другой скрипт через `document.createElement('script')`, тот тоже разрешён». Это позволяет работать React, Next, аналитике без полной allowlist-портянки.
+
+Migration: новый CSP всегда катится через `Content-Security-Policy-Report-Only` сначала. Браузер не блокирует, но шлёт отчёты на `/api/csp-report`. Неделю-две собираете нарушения, чините легитимные (свой код, шрифты, аналитика), потом переключаете на enforce-режим.
+
+Endpoint для report:
+
+```ts
+// app/api/csp-report/route.ts
+export async function POST(req: Request) {
+  const report = await req.json().catch(() => null);
+  if (report) {
+    console.warn("CSP violation:", JSON.stringify(report));
+    // в проде — в Sentry / ELK / отдельную таблицу
+  }
+  return new Response(null, { status: 204 });
+}
+```
+
+Trusted Types — следующий уровень защиты от DOM-based XSS. Браузер запрещает присваивать строки в опасные DOM-sink (`innerHTML`, `outerHTML`, `eval`, `setTimeout(string)`). Передавать можно только объекты типа `TrustedHTML`, созданные через политику:
+
+```ts
+// ХОРОШО: Trusted Types policy
+if (window.trustedTypes && window.trustedTypes.createPolicy) {
+  const policy = window.trustedTypes.createPolicy("default", {
+    createHTML: (input) => DOMPurify.sanitize(input),
+  });
+  // теперь любая попытка element.innerHTML = userInput пройдёт через DOMPurify
+}
+```
+
+Включается в CSP: `require-trusted-types-for 'script'; trusted-types default dompurify`.
+
+Типичные ловушки:
+- `eval`, `new Function()`, `setTimeout("code", ...)` — запрещены без `unsafe-eval`. Используйте `setTimeout(() => {...}, ...)`.
+- Inline `onclick`/`onload` — запрещены. Привязывайте через `addEventListener`.
+- Inline `<style>` — нужен nonce или `'unsafe-inline'` (последнее убивает защиту от инъекций стилей).
+- `innerHTML` с пользовательским вводом — DOMPurify обязателен; с Trusted Types — на уровне браузера принудительно.
+- Сторонние виджеты (чат-боты, виджеты соцсетей) часто требуют `'unsafe-inline'` и `'unsafe-eval'` — изучайте их CSP-требования до интеграции.
+
+## Дополнительные security-заголовки
+
+CSP — главный, но не единственный. Минимальный набор для production:
+
+```
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: strict-origin-when-cross-origin
+Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Resource-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+Расшифровка:
+- HSTS — браузер запоминает, что сайт работает только по HTTPS. `preload` — предзагрузка в список Chromium/Firefox (заявка на hstspreload.org).
+- `nosniff` — браузер не угадывает MIME-тип (защита от polyglot-файлов).
+- `X-Frame-Options: DENY` — запрет встраивания в iframe (legacy, но всё ещё нужен; `frame-ancestors` в CSP заменяет, но не все боты понимают).
+- `Referrer-Policy` — управление передачей `Referer`. `strict-origin-when-cross-origin` — баланс приватности и аналитики.
+- `Permissions-Policy` — отключаем неиспользуемые API. `interest-cohort=()` — отказ от Google FLoC.
+- COOP/COEP/CORP — изоляция процессов браузера, защита от Spectre-class и cross-origin утечек. Нужно для `SharedArrayBuffer` (WASM-тяжёлые приложения).
+
+Проверить все заголовки разом — `securityheaders.com` или `observatory.mozilla.org`. Цель — A+ на обоих.
+
+## Pen testing, bug bounty, ASVS
+
+Чек-лист после внедрения базовой гигиены:
+
+- **OWASP ASVS** (Application Security Verification Standard) — формальный список из 280+ требований с тремя уровнями (Level 1 — базовый, Level 2 — для бизнес-данных, Level 3 — для критичных систем). Используйте как чек-лист на ревью архитектуры.
+- **OWASP ZAP** — open-source DAST-сканер. Запускайте против stage-окружения раз в неделю, fail на high. Есть GitHub Action `zaproxy/action-baseline`.
+- **Burp Suite** (Community/Pro) — стандарт для ручного пентеста. Перехват запросов, фаззинг, повтор, intruder для брутфорса, repeater для ручной модификации.
+- **Bug bounty** — публичная программа на HackerOne, Bugcrowd, Standoff365. Платите за подтверждённые находки. Окупается даже на средних проектах: один найденный SQLi дешевле, чем серия штрафов после утечки.
+
+## SAST и DAST в CI/CD
+
+SAST (Static Application Security Testing) ищет уязвимости в исходниках без запуска. DAST — динамически, через запросы к работающему приложению.
+
+SAST-инструменты:
+- **Semgrep** — open-source, правила на YAML, есть готовый ruleset `p/owasp-top-ten`. Скорость — десятки тысяч строк в секунду.
+- **SonarQube / SonarCloud** — коммерческий, глубокая интеграция с PR.
+- **CodeQL** (GitHub) — бесплатно для open-source, мощный язык запросов, есть готовые packs для security.
+- **Snyk Code** — фокус на DevSecOps, интеграция с IDE.
+
+Минимальный шаг Semgrep в GitHub Actions:
+
+```yaml
+- name: Semgrep
+  uses: returntocorp/semgrep-action@v1
+  with:
+    config: >-
+      p/owasp-top-ten
+      p/javascript
+      p/typescript
+      p/security-audit
+```
+
+DAST в CI — ZAP baseline scan против stage:
+
+```yaml
+- name: ZAP Baseline Scan
+  uses: zaproxy/action-baseline@v0.10.0
+  with:
+    target: "https://stage.example.com"
+    fail_action: true
+```
+
+Сценарий зрелого пайплайна: pre-commit (gitleaks для секретов, eslint-plugin-security) → PR (Semgrep + npm audit) → merge в main (Snyk SCA + контейнер scan через Trivy) → deploy на stage (ZAP baseline) → раз в неделю (полный ZAP scan + ручной обзор отчётов).
+
+## Итого
+
+OWASP Top 10 — это не «10 кнопок, которые надо нажать», а карта рисков, по которой строится культура безопасной разработки. 90% инцидентов закрываются базовой гигиеной: HTTPS с HSTS, параметризованные запросы, RBAC с проверкой на сервере, rate-limit, актуальные зависимости через Dependabot, security-заголовки, структурированные логи. Оставшиеся 10% — это threat modeling на этапе дизайна, supply-chain hygiene (SBOM, signed commits, верификация артефактов), strict CSP с nonce, регулярные пентесты и bug bounty.
+
+Главное правило: безопасность не добавляется в конце спринта, она проектируется с первого коммита. Каждый PR — повод спросить «а что если этот ID подменить, а если параметр конкатенируется в SQL, а если зависимость с уязвимостью пробралась в lock-файл». Это дешевле и эффективнее, чем postmortem после инцидента.
 
 <Faq>
-  <FaqItem q="Какая самая частая уязвимость веб-приложений по OWASP?">
-    A01 — Сломанный контроль доступа. Пользователь A через подмену ID в URL получает данные пользователя B. Решение. Все запросы к данным проверяют принадлежность объекта текущему пользователю на бэкенде. Никогда не доверяйте параметру userId из клиента — берите ID из сессии или JWT. Внутри API используйте RBAC или ABAC, не хардкодьте роли в коде фронта. Это самый частый вектор атак на типовые сайты в РФ, и закрывается простой дисциплиной валидации на сервере.
+  <FaqItem q="Какая самая частая уязвимость веб-приложений по OWASP Top 10?">
+    A01 — Broken Access Control. Лидер с 2021 года, подтверждается данными OWASP по 94% протестированных приложений. Самый частый подвид — IDOR: пользователь меняет ID в URL и получает чужие данные. Лечится middleware с обязательной проверкой принадлежности объекта пользователю на сервере, никогда не на клиенте. Дополнительно — UUID/ULID вместо инкрементальных ID, единый policy-движок (Casbin, OPA), интеграционные тесты на негативные сценарии. Никогда не доверяйте параметру userId из клиента — берите ID из сессии или JWT. Внутри API используйте RBAC или ABAC, не хардкодьте роли в коде фронта.
   </FaqItem>
-  <FaqItem q="Как защититься от SQL-инъекций в веб-приложении?">
-    SQL-injection, NoSQL-injection, command-injection. Лечится одним правилом: никогда не конкатенируйте пользовательский ввод в команды. Используйте параметризованные запросы (prepared statements в Postgres, подготовленные выражения в Go database/sql, ORM с биндингами). Современные ORM (Prisma, Drizzle, GORM) делают это автоматически — не пытайтесь обходить через raw SQL без острой необходимости. Это закрывает 99% инъекционных атак на типовое приложение без дополнительных усилий.
+  <FaqItem q="Как защититься от SQL-инъекций в Node.js и Go?">
+    Универсальное правило — никогда не конкатенируйте пользовательский ввод в команды. В Node.js используйте параметризованные запросы через драйвер (pg, mysql2) или ORM (Prisma, Drizzle). В Go — database/sql с placeholder-ами ($1, $2 для Postgres, ? для MySQL). Современные ORM делают параметризацию автоматически и закрывают 99% инъекций. Если приходится писать raw SQL для оптимизации — обязательно через prepared statement с явными параметрами. Дополнительно: Semgrep с правилом javascript.lang.security.audit.sqli ловит конкатенации в CI до мержа.
+  </FaqItem>
+  <FaqItem q="Как настроить strict Content Security Policy в Next.js 15?">
+    Через middleware.ts: генерируйте nonce на каждый запрос (Buffer.from(crypto.randomUUID()).toString base64), передавайте его в заголовке Content-Security-Policy и в request headers, в layout.tsx читайте через headers().get x-nonce и прокидывайте в Script. Используйте strict-dynamic, чтобы скрипт с nonce мог загружать дочерние скрипты. Сначала катите в Report-Only режиме на 1-2 недели, собирайте нарушения через report-uri в Sentry, чините легитимные, потом переключайте на enforce. Не используйте unsafe-inline и unsafe-eval — они сводят защиту от XSS к нулю.
   </FaqItem>
   <FaqItem q="Какие security-заголовки нужно настроить в HTTP-ответах?">
-    Минимальный набор. X-Content-Type-Options: nosniff. X-Frame-Options: DENY (запрет встраивания в iframe для защиты от clickjacking). Strict-Transport-Security (HSTS) — принудительный HTTPS. Content-Security-Policy (CSP) — ограничение источников скриптов и ресурсов. Referrer-Policy — управление передачей рефера. Permissions-Policy — отключение ненужных API браузера (камера, геолокация). Настройка одна на nginx или edge-функцию, защищает от половины классов атак.
+    Минимальный набор: Strict-Transport-Security max-age 63072000 includeSubDomains preload, X-Content-Type-Options nosniff, X-Frame-Options DENY (плюс frame-ancestors none в CSP), Referrer-Policy strict-origin-when-cross-origin, Permissions-Policy с пустыми скобками для неиспользуемых API (camera, microphone, geolocation, interest-cohort), Cross-Origin-Opener-Policy same-origin, Cross-Origin-Resource-Policy same-origin. Главный заголовок — Content-Security-Policy со строгим script-src через nonce. Проверка через securityheaders.com и observatory.mozilla.org, цель A+ на обоих.
   </FaqItem>
-  <FaqItem q="Как защитить аутентификацию от перебора паролей?">
-    Защита от перебора. Rate-limit на /login и /reset-password (Redis token-bucket, 5–10 попыток в минуту). 2FA для админских аккаунтов. Сессии — httpOnly, Secure, SameSite=Strict или Lax; токены ротируются. При выходе сессия инвалидируется на сервере, не только удаляется кука. Пароли — bcrypt, argon2id; никогда не SHA или MD5. Без rate-limit любой бот за ночь переберёт типовые комбинации с 5–10% успехом — это типичный сценарий взлома.
+  <FaqItem q="Что такое SSRF и как защититься в Node.js?">
+    Server-Side Request Forgery — сервер по запросу пользователя ходит на произвольный URL, и атакующий заставляет его лезть во внутреннюю сеть или к metadata облака (169.254.169.254 на AWS, Yandex Cloud, GCP отдают IAM-токены без auth). Защита: обёртка safeFetch с allowlist протоколов (только http и https), резолвом DNS и проверкой всех IP против списка приватных подсетей (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16, ::1/128, fc00::/7), таймаут 5 секунд, redirect manual. Дополнительно — выделенный egress-proxy, IMDSv2 на AWS, network policies в k8s, запрет egress в metadata-подсети.
   </FaqItem>
-  <FaqItem q="Что такое SSRF и как от него защититься?">
-    Server-Side Request Forgery — когда сервер по запросу пользователя ходит на произвольный URL, и злоумышленник заставляет его лезть во внутреннюю сеть (например, метаданные облака, internal-сервисы). Защита. Явный whitelist доменов для исходящих запросов. Фильтрация частных IP-диапазонов (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.1, 169.254.169.254). Отдельная подсеть для исходящих запросов без доступа к internal-сервисам. Это особенно критично для сервисов с user-supplied URL (загрузка по ссылке, webhook-проксирование).
+  <FaqItem q="Как защитить аутентификацию от перебора и credential stuffing?">
+    Многослойная защита. Rate-limit на /login через express-rate-limit с RedisStore: 10 попыток на IP и 5 на email за 15 минут. Блокировка аккаунта после N провалов с email-уведомлением владельцу. Обязательный MFA для админских ролей (TOTP через otplib или WebAuthn). Проверка пароля при регистрации против списка топ-10000 утёкших паролей или API haveibeenpwned. Пароли хэшируются argon2id (memoryCost 19456, timeCost 2) или bcrypt — никогда не SHA или MD5. JWT с явным указанием algorithms HS256 (защита от alg none атаки), коротким TTL 15 минут плюс refresh-токен с ротацией. Куки HttpOnly, Secure, SameSite Lax или Strict, префикс __Host- для критичных.
   </FaqItem>
-  <FaqItem q="Какие минимальные практики безопасности нужны на старте проекта?">
-    Базовая гигиена закрывает 90% инцидентов. HTTPS на всё, TLS 1.2+ (в идеале 1.3). Параметризованные запросы для SQL. RBAC для контроля доступа. Rate-limit на чувствительные эндпоинты. Актуальные зависимости (Dependabot, Renovate). Security-заголовки. Логи всех попыток входа и изменений ролей. Внедряйте threat modeling на этапе проектирования, а не аудит за неделю до релиза. Безопасность — это не один пункт чек-листа, а культура разработки и постоянная практика.
+  <FaqItem q="Какой реальный пример supply-chain атаки в 2024 году?">
+    CVE-2024-3094 — backdoor в xz utils. Злоумышленник под именем Jia Tan два года втирался в доверие как мейнтейнер библиотеки xz/liblzma, которая транзитивно подтягивается в OpenSSH через systemd на большинстве дистрибутивов Linux. В версиях 5.6.0 и 5.6.1 он встроил бэкдор: специально сформированные тестовые файлы при сборке через autotools модифицировали shared object и добавляли проверку публичного ключа атакующего в SSH-аутентификацию. Случайно обнаружен инженером Microsoft Andres Freund по 500-мс задержке логина. Уроки: SBOM обязателен, reproducible builds желательны, signed commits с GPG/Sigstore, не доверяйте слепо транзитивным зависимостям, мониторинг аномалий производительности после обновлений критичных библиотек.
   </FaqItem>
 </Faq>
 

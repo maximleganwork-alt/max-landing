@@ -5,37 +5,46 @@ date: "2025-10-30"
 tags: ["сайт", "архитектура", "сравнение"]
 ---
 
-«Нам нужны микросервисы» — частая фраза, которая ломает проекты на старте. Микросервисы решают конкретные проблемы команд из 50+ человек, и на старте чаще всего вреднее, чем полезнее. Разберём по-человечески, когда что выбирать.
+«Нам нужны микросервисы» — частая фраза, которая ломает проекты на старте. Микросервисы решают конкретные проблемы команд из 50+ человек, и на старте чаще всего вреднее, чем полезнее. Разберём по-человечески, когда что выбирать, и подробно покрываем три темы, которые в большинстве статей по микросервисам пропускают: распределённые транзакции (saga, outbox), выбор протокола (gRPC, REST, Kafka) и observability.
 
 ## Что такое монолит
 
 Монолит — это одно приложение, в котором весь код, бизнес-логика и работа с БД живут в одном процессе и одной кодовой базе. Деплой — один артефакт. Тесты — общий набор. Базы — одна или несколько внутри одного домена.
 
-Современный монолит на **Next.js + Postgres** или **Go + Postgres** легко держит **5 000–20 000 RPM** и **сотни тысяч пользователей**. Это покрывает 95% задач малого и среднего бизнеса.
+Современный монолит на **Next.js + Postgres** или **Go + Postgres** легко держит **5 000–20 000 RPM** и **сотни тысяч пользователей**. Это покрывает 95% задач малого и среднего бизнеса. Транзакции — обычные ACID, миграции — один набор, дебаг — стек-трейс в одном процессе.
+
+## Что такое модульный монолит
+
+Модульный монолит — это компромисс: один деплой, но внутри строго разделённые модули (`billing`, `catalog`, `orders`, `users`) с явными интерфейсами. Каждый модуль владеет своими таблицами, не лезет в чужие напрямую, а обменивается данными через публичный API модуля (функции, события в шине внутри процесса).
+
+Преимущество: вы получаете дисциплину границ, как у микросервисов, но не платите за сетевые вызовы и devops-сложность. Когда модуль реально перерастёт монолит — он выносится в отдельный сервис без переписывания всего.
 
 ## Что такое микросервисы
 
-Микросервисы — это разбиение приложения на 5–50 независимо деплоящихся сервисов, каждый со своей БД, очередью и API. Они общаются через **REST**, **gRPC** или брокеры (**Kafka**, **RabbitMQ**).
+Микросервисы — это разбиение приложения на 5–50 независимо деплоящихся сервисов, каждый со своей БД, очередью и API. Они общаются через **REST**, **gRPC** или брокеры (**Kafka**, **RabbitMQ**, **NATS**).
 
 Сильные стороны:
 
-- Команды разных сервисов могут работать независимо.
+- Команды разных сервисов работают независимо, могут релизить по своему графику.
 - Можно масштабировать отдельный сервис без масштабирования всего.
-- Падение одного сервиса не ложит всё.
+- Падение одного сервиса не ложит всё (если архитектура спроектирована правильно).
+- Можно использовать разные стеки: ML-сервис на Python, основной API на Go, фронт-BFF на Node.
 
 Слабые стороны:
 
 1. **Сложность эксплуатации**: K8s, service mesh, distributed tracing, централизованное логирование.
-2. **Распределённые транзакции**: сложно гарантировать целостность между сервисами.
-3. **Latency**: сетевые вызовы между сервисами медленнее обычных функций.
-4. **Дороже** в разработке и поддержке в 2–3 раза.
+2. **Распределённые транзакции**: ACID между сервисами невозможен — нужны saga, outbox, eventual consistency.
+3. **Latency**: сетевые вызовы между сервисами в 100–1000 раз медленнее обычных функций.
+4. **Дороже** в разработке (+30–50%) и поддержке (в 2–3 раза).
+5. **Тестирование**: контрактные тесты, моки соседних сервисов, e2e на стейдже.
 
 ## Когда выбирать монолит
 
 - Команда до 10 разработчиков.
 - Один продукт с понятной предметной областью.
 - Нагрузка ниже 10 000 RPM.
-- Бюджет ограничен.
+- Бюджет ограничен, нужно быстро проверить гипотезу (MVP).
+- Типовая бизнес-логика без радикально разных нефункциональных требований к разным частям системы.
 
 В 99% случаев SaaS, e-commerce, корпоративные сайты, личные кабинеты лучше делать монолитом. Стартуйте с **модульного монолита**: четкие границы модулей внутри одного процесса. Когда придёт время — отдельные модули легко выносятся в сервисы.
 
@@ -43,46 +52,559 @@ tags: ["сайт", "архитектура", "сравнение"]
 
 ## Когда нужны микросервисы
 
-- Больше 30–50 разработчиков, разделённых на команды.
-- Несколько продуктов с разными жизненными циклами.
-- Часть функциональности требует радикально другого стека (например, ML-сервис на Python рядом с основным API на Go).
-- Конкретные сервисы имеют профиль нагрузки сильно отличающийся от остальных.
+- Больше 30–50 разработчиков, разделённых на команды по доменам.
+- Несколько продуктов с разными жизненными циклами и независимыми релизами.
+- Часть функциональности требует радикально другого стека (ML на Python рядом с основным API на Go).
+- Конкретные сервисы имеют профиль нагрузки сильно отличающийся от остальных (видео-транскодер, поисковая выдача, биллинг).
+- Регуляторные требования: PCI-DSS на платежи, ФЗ-152 на ПДн — изоляция в отдельный сервис упрощает аудит.
 
 Если ничего из этого нет — микросервисы добавят сложности и не дадут пользы.
 
-## Промежуточный вариант: модульный монолит
+## Антипаттерны микросервисов
 
-Подход: **один деплой, чёткие модули с явными интерфейсами**. Внутри Go или Node проекта вы строго разделяете слои, каждый модуль имеет свой пакет, свои миграции, не лезет в чужие таблицы напрямую.
+Самые частые грабли, которые мы видим в продакшене:
 
-Преимущество: вы получаете дисциплину границ, как у микросервисов, но не платите за сетевые вызовы и devops-сложность. Когда модуль реально перерастёт монолит — он выносится в отдельный сервис без переписывания всего.
+- **Distributed monolith** — сервисы разделены, но всё дёргает всех синхронно по REST, релизы координируются между командами. Получили все минусы микросервисов и ноль плюсов.
+- **Наносервисы** — сервис на 200 строк кода, делающий одну функцию. Накладные расходы на сетевой вызов, деплой и observability больше, чем сама работа.
+- **Shared DB** — два сервиса пишут в одну таблицу. Это монолит с сетевым вызовом посередине; любая миграция ломает оба.
+- **Synchronous chains** — `A → B → C → D → E` в одном HTTP-запросе. P99 latency умножается, любой сбой в середине роняет весь запрос.
+- **Отсутствие версионирования API** — ломающее изменение в `userService` валит все сервисы, которые его дёргают.
+
+## Distributed Transactions: почему 2PC не работает
+
+В монолите вы открываете транзакцию, делаете три INSERT в три таблицы, коммитите. ACID гарантирует, что либо всё применится, либо ничего. В микросервисах таблицы лежат в разных БД разных сервисов — обычная транзакция невозможна.
+
+Классический ответ — **двухфазный коммит (2PC)**. Координатор спрашивает все участвующие сервисы: «готовы коммитить?», получает ack от всех, потом отправляет «коммитьте». Проблемы 2PC:
+
+- **Блокирующий протокол**: участники держат локи на ресурсах между prepare и commit. Если координатор упал — локи висят, БД блокируется.
+- **Не масштабируется**: latency = max(latency всех участников). При 5 сервисах одна медленная БД тормозит всю транзакцию.
+- **Не работает с большинством современных брокеров и NoSQL** (Kafka, MongoDB до 4.x, DynamoDB).
+
+В микросервисах используют другие паттерны: **saga** для распределённых процессов и **outbox** для атомарной публикации событий.
+
+## Saga pattern: orchestration vs choreography
+
+Saga — это последовательность локальных транзакций. Каждый шаг — отдельная ACID-транзакция в одном сервисе. Если шаг падает, запускаются **компенсирующие транзакции**, откатывающие предыдущие шаги логически (не через rollback БД, а через бизнес-операции: «вернуть деньги», «вернуть товар на склад»).
+
+**Choreography**: каждый сервис слушает события и реагирует. Нет центрального координатора — сервисы договариваются через event bus.
+
+**Orchestration**: один сервис-оркестратор знает весь процесс, дёргает остальных и решает, когда запускать компенсации. Проще отлаживать и менять процесс, но появляется единая точка изменений.
+
+Для большинства бизнес-процессов длиной 3–7 шагов мы рекомендуем orchestration — он явный, документируемый и тестируемый.
+
+### Пример saga: оформление заказа
+
+Процесс: `orderService → paymentService → inventoryService → shippingService`. Если на любом шаге сбой — компенсация откатывает уже выполненные шаги.
+
+```typescript
+// orchestrator.ts
+type SagaStep = {
+  name: string
+  action: () => Promise<void>
+  compensation: () => Promise<void>
+}
+
+export async function placeOrderSaga(orderId: string, userId: string, items: Item[]) {
+  const completed: SagaStep[] = []
+
+  const steps: SagaStep[] = [
+    {
+      name: "create-order",
+      action: () => orderService.create(orderId, userId, items),
+      compensation: () => orderService.cancel(orderId),
+    },
+    {
+      name: "charge-payment",
+      action: () => paymentService.charge(userId, totalAmount(items), orderId),
+      compensation: () => paymentService.refund(orderId),
+    },
+    {
+      name: "reserve-stock",
+      action: () => inventoryService.reserve(orderId, items),
+      compensation: () => inventoryService.release(orderId),
+    },
+    {
+      name: "schedule-shipping",
+      action: () => shippingService.schedule(orderId, userId),
+      compensation: () => shippingService.cancel(orderId),
+    },
+  ]
+
+  try {
+    for (const step of steps) {
+      await step.action()
+      completed.push(step)
+    }
+    return { status: "completed" }
+  } catch (err) {
+    // компенсации в обратном порядке
+    for (const step of completed.reverse()) {
+      try {
+        await step.compensation()
+      } catch (compErr) {
+        // компенсация упала — алертим, ставим в DLQ для ручного разбора
+        await alertOps(`saga compensation failed: ${step.name}`, compErr)
+      }
+    }
+    return { status: "rolled_back", failedAt: err }
+  }
+}
+```
+
+Компенсация **должна быть идемпотентной**: повтор не должен ломать данные. `paymentService.refund(orderId)` при повторном вызове видит, что уже возвращали, и не делает второй возврат.
+
+## Outbox pattern: решение dual-write
+
+Типовая проблема: сервис делает `INSERT INTO orders` и сразу публикует событие `OrderCreated` в Kafka. Если БД ответила, а Kafka упала — событие потеряно. Если Kafka успела, а БД rollback — событие отправлено по несуществующему заказу. Это **dual-write problem**.
+
+Решение — **outbox**: и бизнес-данные, и сообщение пишутся в одну таблицу одной транзакцией БД. Отдельный воркер читает outbox и публикует в брокер.
+
+```sql
+-- outbox-таблица в той же БД, что и orders
+CREATE TABLE outbox (
+  id           BIGSERIAL PRIMARY KEY,
+  aggregate_id TEXT NOT NULL,
+  event_type   TEXT NOT NULL,
+  payload      JSONB NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  published_at TIMESTAMPTZ
+);
+
+CREATE INDEX outbox_unpublished ON outbox (created_at) WHERE published_at IS NULL;
+```
+
+Запись бизнес-операции и события — одной транзакцией:
+
+```typescript
+await db.transaction(async (tx) => {
+  await tx.query("INSERT INTO orders (id, user_id, total) VALUES ($1, $2, $3)", [
+    orderId, userId, total,
+  ])
+  await tx.query(
+    "INSERT INTO outbox (aggregate_id, event_type, payload) VALUES ($1, $2, $3)",
+    [orderId, "OrderCreated", JSON.stringify({ orderId, userId, total })],
+  )
+})
+```
+
+Фоновый publisher читает outbox и шлёт в Kafka:
+
+```typescript
+async function publisherLoop() {
+  while (true) {
+    const rows = await db.query(
+      `SELECT id, event_type, payload
+         FROM outbox
+        WHERE published_at IS NULL
+        ORDER BY id
+        LIMIT 100
+        FOR UPDATE SKIP LOCKED`,
+    )
+    if (rows.length === 0) {
+      await sleep(500)
+      continue
+    }
+
+    for (const row of rows) {
+      try {
+        await kafka.send({
+          topic: row.event_type,
+          messages: [{ key: row.aggregate_id, value: JSON.stringify(row.payload) }],
+        })
+        await db.query("UPDATE outbox SET published_at = NOW() WHERE id = $1", [row.id])
+      } catch (err) {
+        // не помечаем published — следующая итерация повторит
+        log.error({ err, id: row.id }, "publish failed")
+      }
+    }
+  }
+}
+```
+
+Гарантия: at-least-once. Сообщение может уйти в Kafka, но падение перед `UPDATE outbox` приведёт к повтору. Поэтому consumer должен быть **идемпотентным**.
+
+## Inbox pattern для consumer
+
+На стороне получателя — зеркальный паттерн. Consumer пишет `event_id` в inbox-таблицу с уникальным индексом. Если сообщение приходит второй раз — INSERT падает, обработка пропускается.
+
+```sql
+CREATE TABLE inbox (
+  event_id   TEXT PRIMARY KEY,
+  consumer   TEXT NOT NULL,
+  handled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+```typescript
+async function handleOrderCreated(event: OrderCreatedEvent) {
+  await db.transaction(async (tx) => {
+    try {
+      await tx.query("INSERT INTO inbox (event_id, consumer) VALUES ($1, $2)", [
+        event.id, "shipping-service",
+      ])
+    } catch (e) {
+      if (isUniqueViolation(e)) return // уже обработали — выходим тихо
+      throw e
+    }
+    await tx.query(
+      "INSERT INTO shipments (order_id, status) VALUES ($1, 'pending')",
+      [event.orderId],
+    )
+  })
+}
+```
+
+## Eventually consistent — компромисс, который надо принять
+
+Saga и outbox дают **eventual consistency**: между шагами система временно противоречива (заказ создан, но оплата ещё не списана). Бизнес должен это понимать и проектировать UX соответствующе: «Ваш заказ обрабатывается», статус-страница, push при завершении.
+
+Strong consistency возможна только внутри одной БД (одного сервиса). Если бизнес-инвариант требует «оплата и отгрузка строго одновременно» — это сигнал, что границы сервисов выбраны неправильно: оба процесса должны жить в одном сервисе.
+
+## gRPC vs REST vs Kafka: как выбрать
+
+Главная развилка: **синхронный** или **асинхронный** обмен. REST и gRPC — синхронные (запрос-ответ). Kafka и другие брокеры — асинхронные (publish/subscribe).
+
+### REST
+
+Плюсы:
+
+- Простота: HTTP + JSON, понимают все, дебажится через `curl`.
+- Кеш через стандартные HTTP-заголовки (`Cache-Control`, `ETag`).
+- Любой LB, прокси, WAF умеет работать с HTTP/1.1.
+- OpenAPI/Swagger даёт документацию и кодогенерацию клиентов.
+
+Минусы:
+
+- JSON «дороже» бинарных форматов: больше байт, парсинг медленнее.
+- Нет нативного streaming в обе стороны (long-polling и SSE — костыли).
+- Контракт не enforced: типы только в документации.
+
+**Когда**: API для фронта/мобайла, публичные API, простые service-to-service вызовы при низком RPS.
+
+### gRPC
+
+Плюсы:
+
+- HTTP/2 multiplexing: одно соединение, много параллельных запросов.
+- Protobuf: бинарный формат, в 3–10 раз компактнее JSON, типизированный контракт в `.proto`.
+- Двусторонний streaming.
+- Кодогенерация клиента и сервера на 10+ языках.
+- Высокий throughput при низкой latency.
+
+Минусы:
+
+- Дебаг сложнее: бинарь, нужен `grpcurl` или Postman с reflection.
+- Не все LB и WAF корректно работают с HTTP/2 и trailers.
+- Браузеры напрямую не умеют — нужен gRPC-Web прокси.
+
+**Когда**: service-to-service во внутренней сети, высокий RPS, строгие контракты между командами.
+
+### Kafka (и брокеры событий)
+
+Плюсы:
+
+- Асинхронный publish/subscribe — отправитель не ждёт получателя.
+- Persistent log: сообщения хранятся, можно перечитать (replay).
+- Partitioning + ordering внутри партиции.
+- Один продьюсер — много независимых консьюмеров.
+- Базис для event sourcing, CDC, audit log.
+
+Минусы:
+
+- Требует сопровождения кластера (или managed: Yandex Cloud Managed Kafka, Confluent Cloud).
+- Eventually consistent по природе.
+- Минимум 3 брокера для production-надёжности — заметная инфра.
+- Latency выше, чем у синхронных вызовов.
+
+**Когда**: event-driven архитектуры, интеграции, аудит, аналитика, развязка сервисов во времени.
+
+### Сравнительная таблица
+
+| Параметр              | REST/JSON         | gRPC/Protobuf    | Kafka                  |
+| --------------------- | ----------------- | ---------------- | ---------------------- |
+| Парадигма             | request/response  | request/response | publish/subscribe      |
+| Транспорт             | HTTP/1.1 или 2    | HTTP/2           | TCP, свой протокол     |
+| Формат                | JSON (текст)      | Protobuf (бинарь)| любой (часто Protobuf/Avro) |
+| Latency p50           | 5–50 мс           | 1–10 мс          | 5–30 мс end-to-end     |
+| Throughput            | средний           | очень высокий    | очень высокий          |
+| Типизация контракта   | OpenAPI (опц.)    | `.proto` (обязат.) | Schema Registry        |
+| Streaming             | нет (SSE/WS)      | bidirectional    | да (consumer pull)     |
+| Ordering              | n/a               | n/a              | в рамках партиции      |
+| Persistence           | нет               | нет              | да (retention)         |
+| Replay                | нет               | нет              | да                     |
+| Дебаг                 | очень простой     | средний          | средний                |
+| Браузер native        | да                | через gRPC-Web   | нет                    |
+| Backward compat       | вручную           | поддерживается   | через Schema Registry  |
+| Cost инфры            | минимум           | минимум          | заметный (3+ брокера)  |
+
+### Гибрид: типовое сочетание для веб-проекта
+
+Большинство зрелых архитектур комбинируют все три:
+
+- **REST** — для API, который дёргает фронт и мобайл.
+- **gRPC** — для service-to-service вызовов во внутренней сети.
+- **Kafka** — для событий, аудита, интеграций, асинхронных пайплайнов.
+
+Альтернативы Kafka: **NATS** (легче, проще, без долгого хранения), **RabbitMQ** (классические очереди с маршрутизацией), **AWS SQS/SNS** или **Yandex Cloud Message Queue** (managed, без сопровождения кластера).
+
+<InlineCTA>Спроектируем протокол обмена между сервисами под ваш профиль нагрузки</InlineCTA>
+
+### Пример .proto и gRPC handler на Go
+
+```protobuf
+// orders/v1/orders.proto
+syntax = "proto3";
+
+package orders.v1;
+
+option go_package = "github.com/example/orders/pb;ordersv1";
+
+service OrderService {
+  rpc GetOrder    (GetOrderRequest)    returns (Order);
+  rpc CreateOrder (CreateOrderRequest) returns (Order);
+  rpc StreamEvents(StreamEventsRequest) returns (stream OrderEvent);
+}
+
+message GetOrderRequest    { string order_id = 1; }
+message CreateOrderRequest { string user_id = 1; repeated OrderItem items = 2; }
+message StreamEventsRequest{ string user_id = 1; }
+
+message Order {
+  string order_id = 1;
+  string user_id = 2;
+  int64 total_kopecks = 3;
+  repeated OrderItem items = 4;
+  string status = 5;
+}
+
+message OrderItem { string sku = 1; int32 qty = 2; int64 price_kopecks = 3; }
+message OrderEvent { string order_id = 1; string type = 2; int64 ts = 3; }
+```
+
+```go
+// internal/grpc/orders_handler.go
+package grpcserver
+
+import (
+    "context"
+
+    ordersv1 "github.com/example/orders/pb"
+    "google.golang.org/grpc/codes"
+    "google.golang.org/grpc/status"
+)
+
+type OrderServer struct {
+    ordersv1.UnimplementedOrderServiceServer
+    repo OrderRepo
+}
+
+func (s *OrderServer) GetOrder(
+    ctx context.Context, req *ordersv1.GetOrderRequest,
+) (*ordersv1.Order, error) {
+    if req.OrderId == "" {
+        return nil, status.Error(codes.InvalidArgument, "order_id required")
+    }
+    o, err := s.repo.Get(ctx, req.OrderId)
+    if err != nil {
+        return nil, status.Errorf(codes.NotFound, "order not found: %v", err)
+    }
+    return &ordersv1.Order{
+        OrderId:      o.ID,
+        UserId:       o.UserID,
+        TotalKopecks: o.Total,
+        Status:       o.Status,
+    }, nil
+}
+```
+
+### Пример Kafka producer/consumer
+
+```typescript
+// producer.ts
+import { Kafka } from "kafkajs"
+
+const kafka = new Kafka({ clientId: "orders", brokers: ["kafka-1:9092", "kafka-2:9092"] })
+const producer = kafka.producer({ idempotent: true, maxInFlightRequests: 5 })
+await producer.connect()
+
+await producer.send({
+  topic: "orders.events.v1",
+  messages: [
+    {
+      key: order.id, // одинаковый key → одна партиция → ordering
+      value: JSON.stringify({ type: "OrderCreated", orderId: order.id, total: order.total }),
+      headers: { "trace-id": ctx.traceId },
+    },
+  ],
+})
+```
+
+```typescript
+// consumer.ts
+const consumer = kafka.consumer({ groupId: "shipping-service" })
+await consumer.connect()
+await consumer.subscribe({ topic: "orders.events.v1", fromBeginning: false })
+
+await consumer.run({
+  autoCommit: false,
+  eachMessage: async ({ topic, partition, message }) => {
+    const event = JSON.parse(message.value!.toString())
+    try {
+      await handleOrderCreated(event) // идемпотентно через inbox
+      await consumer.commitOffsets([
+        { topic, partition, offset: (Number(message.offset) + 1).toString() },
+      ])
+    } catch (err) {
+      log.error({ err, offset: message.offset }, "consumer failed, will retry")
+      // не коммитим — Kafka повторит
+    }
+  },
+})
+```
+
+## Observability в микросервисах
+
+В монолите упало — вы открыли стек-трейс, увидели всю цепочку, починили. В микросервисах одна пользовательская операция проходит через 5–15 сервисов; без observability вы не отличите «БД медленная» от «соседний сервис в ретраях». Три кита: **logs, metrics, traces**.
+
+### Distributed tracing
+
+Каждый запрос получает `trace_id`, который пробрасывается через все сервисы в HTTP-заголовках по стандарту **W3C Trace Context** (`traceparent`, `tracestate`). Каждый сервис создаёт **спан** — отрезок работы с временем начала, длительностью и атрибутами. Спаны склеиваются в единое дерево.
+
+Стандарт: **OpenTelemetry** (OTel) — единый SDK для логов/метрик/трейсов на 11+ языках. Backend-ы: **Jaeger**, **Tempo** (Grafana), **Honeycomb**, **Yandex Cloud Tracing**, **Datadog APM**.
+
+```typescript
+// otel-init.ts
+import { NodeSDK } from "@opentelemetry/sdk-node"
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
+import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node"
+import { Resource } from "@opentelemetry/resources"
+import { SemanticResourceAttributes } from "@opentelemetry/semantic-conventions"
+
+const sdk = new NodeSDK({
+  resource: new Resource({
+    [SemanticResourceAttributes.SERVICE_NAME]: "orders-service",
+    [SemanticResourceAttributes.SERVICE_VERSION]: process.env.RELEASE ?? "dev",
+    [SemanticResourceAttributes.DEPLOYMENT_ENVIRONMENT]: process.env.ENV ?? "dev",
+  }),
+  traceExporter: new OTLPTraceExporter({
+    url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT, // http://otel-collector:4318/v1/traces
+  }),
+  instrumentations: [getNodeAutoInstrumentations()],
+})
+
+sdk.start()
+process.on("SIGTERM", () => sdk.shutdown())
+```
+
+После этого HTTP, gRPC, БД, Kafka инструментируются автоматически. На каждый запрос вы получаете waterfall со всеми спанами и можете видеть, где именно P99 уходит в полку.
+
+### Metrics: Prometheus + Grafana
+
+Два классических подхода:
+
+- **RED method** для сервисов: **Rate** (RPS), **Errors** (доля 5xx или бизнес-ошибок), **Duration** (latency p50/p95/p99).
+- **USE method** для ресурсов: **Utilization** (CPU/RAM/диск %), **Saturation** (очередь работы), **Errors** (паника, OOM).
+
+```go
+// metrics.go
+import "github.com/prometheus/client_golang/prometheus"
+
+var httpDuration = prometheus.NewHistogramVec(
+    prometheus.HistogramOpts{
+        Name:    "http_request_duration_seconds",
+        Help:    "HTTP latency",
+        Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
+    },
+    []string{"method", "route", "status"},
+)
+
+func init() { prometheus.MustRegister(httpDuration) }
+
+func MetricsMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        start := time.Now()
+        rw := &statusRecorder{ResponseWriter: w, status: 200}
+        next.ServeHTTP(rw, r)
+        httpDuration.
+            WithLabelValues(r.Method, routePattern(r), strconv.Itoa(rw.status)).
+            Observe(time.Since(start).Seconds())
+    })
+}
+```
+
+В Grafana строите дашборд RED на каждый сервис, в Alertmanager — алерт на «error rate > 1% за 5 минут».
+
+### Logs: structured JSON
+
+Текстовые логи в микросервисах нечитаемы. Только **structured JSON** с обязательными полями: `ts`, `level`, `service`, `trace_id`, `span_id`, `user_id`, `request_id`. Тогда вы можете в Loki/ELK сделать `{service="orders"} | json | trace_id="abc..."` и увидеть весь путь запроса.
+
+Стек: **Loki + Promtail + Grafana** (легче, дешевле, интегрирован с Tempo) или **ELK** (Elastic + Logstash + Kibana, тяжелее, мощнее по поиску). Managed: **Yandex Cloud Logging**, **Datadog Logs**.
+
+### Service mesh
+
+Istio, Linkerd берут на себя retries, timeouts, circuit breaking, mTLS и автоматический сбор трейсов **без изменений в коде сервисов**. Sidecar (Envoy) перехватывает весь трафик пода и инструментирует его.
+
+Минус: ещё один слой, который надо понимать и эксплуатировать. Для команд меньше 30 человек обычно overkill — достаточно OTel SDK в каждом сервисе.
+
+### Sentry для exceptions
+
+Метрики и трейсы не показывают конкретный stack trace ошибки. Sentry (или Yandex Cloud Error Tracking) собирает исключения с контекстом, релизом, breadcrumbs. Обязательно настройте **release tracking**: `SENTRY_RELEASE=$GIT_SHA` — тогда видно, какая версия добавила баг, и автоматический regression detection.
+
+### SLO/SLI/SLA и error budget
+
+- **SLI** (indicator) — что измеряем: «доля HTTP 200 за 5 минут», «P99 latency меньше 300 мс».
+- **SLO** (objective) — внутренняя цель: «99.9% успешных ответов за 30 дней».
+- **SLA** (agreement) — что обещаем клиенту в договоре, обычно ниже SLO.
+- **Error budget** = `1 - SLO`. При SLO 99.9% бюджет = 0.1% = ~43 минуты даунтайма в месяц. Если бюджет израсходован — релизы фич ставятся на паузу до восстановления.
+
+Алерты должны быть на **сжигание error budget**, а не на каждую 5xx-ошибку. Иначе команда тонет в шуме (alert fatigue) и игнорирует реальные инциденты. К каждому алерту обязателен **runbook** — пошаговая инструкция, что делать дежурному.
+
+### Стоимость observability
+
+На крупных системах observability — это **5–10% инфра-бюджета**. Логи и трейсы генерируются гигабайтами в день. Меры экономии:
+
+- **Sampling трейсов**: храните 1–10% запросов (head-based) или 100% ошибок и медленных (tail-based).
+- **Log levels**: `info` в прод, `debug` только при необходимости, никаких body-дампов крупных payload.
+- **Retention**: горячее хранение 7–14 дней, холодное в S3 на 90 дней.
+- **Cardinality** метрик: не кладите `user_id` в лейбл Prometheus — взорвёте TSDB.
 
 ## Стоимость эксплуатации
 
-- **Монолит**: 1–3 сервера, простой CI/CD, мониторинг через Sentry + Yandex Cloud Monitoring. **5–15 тыс. ₽/мес** инфраструктура.
-- **Микросервисы**: K8s-кластер, service mesh, отдельный мониторинг и логирование. **30–100+ тыс. ₽/мес** инфраструктура и +1 devops-инженер.
+- **Монолит**: 1–3 сервера, простой CI/CD, мониторинг через Sentry + Yandex Cloud Monitoring. **5–15 тыс. ₽/мес** инфраструктура, 0.2 FTE devops.
+- **Модульный монолит**: то же самое, плюс дисциплина границ.
+- **Микросервисы**: K8s-кластер, service mesh, Kafka, observability-стек. **30–100+ тыс. ₽/мес** инфра, +1 FTE devops/SRE, +30–50% к разработке фич.
 
-## Что в сухом остатке
+Считайте честно: микросервисы окупаются только когда дают конкретное измеримое преимущество (независимое масштабирование критичного сервиса, изоляция команд по 8+ человек, регуляторные требования).
 
-Дефолтный выбор — модульный монолит на Go или Node + Postgres. Этого хватает на 95% проектов и 5+ лет роста. Микросервисы — для крупных команд и специфических нагрузок. Не выбирайте архитектуру, потому что она «современная»; выбирайте, потому что она решает реальную проблему вашего бизнеса.
+## Итого
+
+Дефолтный выбор — **модульный монолит** на Go или Node + Postgres. Этого хватает на 95% проектов и 5+ лет роста. Микросервисы — для крупных команд и специфических нагрузок.
+
+Если уже идёте в микросервисы — вкладывайтесь не в красивые границы сервисов, а в скучный фундамент: **outbox для атомарной публикации событий, saga с компенсациями для распределённых процессов, OpenTelemetry с первого дня, RED-дашборды, error budget и runbook**. Без этого микросервисы превращаются в distributed monolith, который дороже и медленнее обычного.
+
+Не выбирайте архитектуру, потому что она «современная»; выбирайте, потому что она решает реальную проблему вашего бизнеса.
 
 <Faq>
   <FaqItem q="Что лучше — монолит или микросервисы для нового проекта?">
-    Дефолтный выбор — монолит. Современный монолит на Next.js + Postgres или Go + Postgres легко держит 5 000–20 000 RPM и сотни тысяч пользователей. Это покрывает 95% задач малого и среднего бизнеса. Микросервисы решают конкретные проблемы команд из 50+ человек, и на старте чаще всего вреднее, чем полезнее. «Нам нужны микросервисы» — частая фраза, которая ломает проекты на старте, потому что добавляет сложности эксплуатации без реальной выгоды.
+    Дефолтный выбор — монолит, точнее модульный монолит. Современный монолит на Next.js + Postgres или Go + Postgres легко держит 5 000–20 000 RPM и сотни тысяч пользователей. Это покрывает 95% задач малого и среднего бизнеса. Микросервисы решают конкретные проблемы команд из 50+ человек, и на старте чаще всего вреднее, чем полезнее. «Нам нужны микросервисы» — частая фраза, которая ломает проекты, потому что добавляет сложности эксплуатации (K8s, distributed tracing, saga, outbox) без реальной выгоды для команды до 10 человек.
   </FaqItem>
-  <FaqItem q="Когда монолит — правильный выбор?">
-    Четыре признака. Команда до 10 разработчиков. Один продукт с понятной предметной областью. Нагрузка ниже 10 000 RPM. Бюджет ограничен. В 99% случаев SaaS, e-commerce, корпоративные сайты, личные кабинеты лучше делать монолитом. Стартуйте с модульного монолита: четкие границы модулей внутри одного процесса. Когда придёт время — отдельные модули легко выносятся в сервисы. Это золотая середина между гибкостью и простотой эксплуатации.
+  <FaqItem q="Как обеспечить распределённые транзакции между микросервисами?">
+    Двухфазный коммит (2PC) почти не используется: блокирующий, не масштабируется, не работает с большинством брокеров. Вместо него — saga и outbox. Saga — это последовательность локальных транзакций с компенсирующими действиями: создаём заказ, списываем деньги, резервируем товар, планируем доставку; если шаг упал — откатываем предыдущие компенсациями (вернуть деньги, освободить резерв). Orchestration с центральным координатором проще отлаживать, чем choreography через события. Outbox решает dual-write: бизнес-данные и сообщение пишутся одной транзакцией БД, отдельный воркер публикует в Kafka. Inbox с уникальным event_id обеспечивает идемпотентность на стороне consumer. Strong consistency между сервисами невозможна — принимайте eventual consistency.
   </FaqItem>
-  <FaqItem q="Когда нужны микросервисы и какие у них минусы?">
-    Микросервисы оправданы при четырёх условиях. Больше 30–50 разработчиков, разделённых на команды. Несколько продуктов с разными жизненными циклами. Часть функциональности требует радикально другого стека (например, ML-сервис на Python рядом с основным API на Go). Конкретные сервисы имеют профиль нагрузки сильно отличающийся от остальных. Минусы: сложность эксплуатации (K8s, service mesh, distributed tracing); распределённые транзакции; latency сетевых вызовов; разработка и поддержка дороже в 2–3 раза.
+  <FaqItem q="Когда использовать gRPC, REST или Kafka?">
+    REST — для синхронных API, которые дёргает фронт и мобайл: простота, дебаг через curl, кеш через HTTP-заголовки, понимают все. gRPC — для service-to-service во внутренней сети: HTTP/2 multiplexing, бинарный protobuf в 3–10 раз компактнее JSON, типизированный контракт через .proto, bidirectional streaming, высокий throughput. Kafka — для асинхронных событий, event sourcing, audit log, развязки сервисов во времени: persistent log, replay, partitioning. Типовая зрелая архитектура комбинирует все три: REST для UI, gRPC между сервисами, Kafka для событий. Альтернативы Kafka: NATS (легче), RabbitMQ (классические очереди), Yandex Cloud Message Queue (managed без сопровождения кластера).
   </FaqItem>
-  <FaqItem q="Что такое модульный монолит и зачем он нужен?">
-    Один деплой, чёткие модули с явными интерфейсами. Внутри Go или Node проекта вы строго разделяете слои, каждый модуль имеет свой пакет, свои миграции, не лезет в чужие таблицы напрямую. Преимущество: вы получаете дисциплину границ, как у микросервисов, но не платите за сетевые вызовы и devops-сложность. Когда модуль реально перерастёт монолит — он выносится в отдельный сервис без переписывания всего. Это самый прагматичный подход для малого и среднего бизнеса.
+  <FaqItem q="Что такое outbox pattern и зачем он нужен?">
+    Outbox решает dual-write проблему: типовая ошибка — записать заказ в БД и сразу отправить событие OrderCreated в Kafka; если БД ответила, а Kafka упала — событие потеряно; если наоборот — событие по несуществующему заказу. Outbox: бизнес-данные и сообщение пишутся одной транзакцией в одну БД (в таблицу outbox с полями aggregate_id, event_type, payload, published_at). Отдельный фоновый publisher вычитывает unpublished строки через SELECT FOR UPDATE SKIP LOCKED, отправляет в Kafka, помечает published_at = NOW(). Гарантия at-least-once: при падении publisher-а до UPDATE сообщение уйдёт повторно, поэтому consumer обязан быть идемпотентным (через inbox-таблицу с уникальным event_id).
+  </FaqItem>
+  <FaqItem q="Как настроить observability в микросервисах?">
+    Три кита: logs, metrics, traces. Distributed tracing через OpenTelemetry SDK (поддерживает 11+ языков), trace_id пробрасывается между сервисами по W3C Trace Context (заголовки traceparent, tracestate); backends — Jaeger, Tempo, Honeycomb, Yandex Cloud Tracing, Datadog. Metrics: Prometheus + Grafana, RED-метрики на сервисы (Rate, Errors, Duration p50/p95/p99) и USE на ресурсы (Utilization, Saturation, Errors). Logs: только structured JSON с обязательными полями ts, level, service, trace_id, request_id; стек Loki + Promtail или ELK. Sentry для exceptions с release tracking. Service mesh (Istio, Linkerd) даёт retries, circuit breaking и автотрейсинг без правок кода — но overkill до 30 инженеров. SLO/SLI с error budget и runbook на каждый алерт. На больших системах observability — 5–10% инфра-бюджета, экономьте через sampling трейсов и контроль cardinality метрик.
+  </FaqItem>
+  <FaqItem q="Какие антипаттерны микросервисов самые опасные?">
+    Distributed monolith — сервисы разделены, но всё дёргает всех синхронно по REST, релизы координируются между командами; получили все минусы и ноль плюсов. Наносервисы — сервис на 200 строк, накладные расходы на сеть, деплой и observability больше самой работы. Shared DB — два сервиса пишут в одну таблицу, миграция ломает оба. Synchronous chains A→B→C→D→E в одном HTTP-запросе: P99 умножается, сбой в середине роняет весь запрос. Отсутствие версионирования API — ломающее изменение валит соседей. Strong consistency через распределённые локи — медленно и хрупко. Лекарство: модульный монолит как стартовая точка, выделение сервисов только когда есть реальная боль (независимое масштабирование, разные стеки, изоляция команд 8+ человек).
   </FaqItem>
   <FaqItem q="Сколько стоит эксплуатация монолита и микросервисов?">
-    Монолит: 1–3 сервера, простой CI/CD, мониторинг через Sentry + Yandex Cloud Monitoring. 5–15 тыс. ₽/мес инфраструктура. Микросервисы: K8s-кластер, service mesh, отдельный мониторинг и логирование. 30–100+ тыс. ₽/мес инфраструктура и +1 devops-инженер. Разница в стоимости эксплуатации — 5–10 раз в пользу монолита, при этом производительность для большинства задач сравнима. Микросервисы окупаются только когда дают конкретное преимущество (независимое масштабирование, изоляция команд).
-  </FaqItem>
-  <FaqItem q="Как мигрировать с монолита на микросервисы постепенно?">
-    Через паттерн strangler fig. Если стартовали с модульного монолита, выделите один модуль с самой большой нагрузкой или другим стеком. Создайте отдельный сервис, продублируйте API, переключите трафик постепенно через фича-флаги. Удалите старый код из монолита. Повторите для следующего модуля. Этот подход позволяет мигрировать без даунтайма и переписывания всего сразу. Срок миграции одного модуля — 2–6 недель в зависимости от связей с другими модулями.
+    Монолит: 1–3 сервера, простой CI/CD, мониторинг через Sentry + Yandex Cloud Monitoring, 5–15 тыс. ₽/мес инфраструктура, 0.2 FTE devops. Микросервисы: K8s-кластер, Kafka 3+ брокера, observability-стек (Prometheus + Grafana + Loki + Tempo или Datadog), 30–100+ тыс. ₽/мес инфра и +1 FTE devops/SRE, +30–50% к стоимости разработки фич из-за саги, контрактных тестов и координации команд. Разница в эксплуатации — 5–10 раз в пользу монолита, при сравнимой производительности для большинства задач. Микросервисы окупаются только когда дают измеримое преимущество: независимое масштабирование критичного сервиса, изоляция команд, регуляторные требования (PCI-DSS, ФЗ-152).
   </FaqItem>
 </Faq>
 

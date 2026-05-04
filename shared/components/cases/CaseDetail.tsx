@@ -36,7 +36,12 @@ export function CaseDetail({ item, prev, next }: CaseDetailProps) {
       </header>
 
       <div className="mt-10 overflow-hidden rounded-[var(--radius)] border border-border">
-        <CaseVisual kind={item.visual} className="rounded-none" />
+        <CaseVisual
+          image={item.image}
+          kind={item.visual}
+          sizes="(min-width: 1200px) 1200px, calc(100vw - 48px)"
+          className="rounded-none"
+        />
       </div>
 
       {/* KPI row */}

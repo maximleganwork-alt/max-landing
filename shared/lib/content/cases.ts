@@ -46,6 +46,11 @@ export interface CaseStudy {
   tech: string[];
   /** Тип мокапа интерфейса. */
   visual: CaseVisualKind;
+  /** Реальное изображение для карточки и страницы кейса. Хранится в public/ конкретного фронтенда. */
+  image?: {
+    src: string;
+    alt: string;
+  };
   /** Расширенные данные для страницы /cases/<slug>. */
   details: CaseDetails;
 }

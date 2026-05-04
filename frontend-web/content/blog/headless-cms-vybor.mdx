@@ -5,7 +5,9 @@ date: "2025-11-26"
 tags: ["сайт", "headless", "CMS"]
 ---
 
-Headless CMS отделяет хранение и редактирование контента от его отображения. Бэкенд отдаёт данные через API, фронтенд (Next.js, Astro, Vue) рендерит так, как нужно. Подход выгоден не всем — но в правильных кейсах экономит десятки часов разработки.
+Headless CMS отделяет хранение и редактирование контента от его отображения. Бэкенд отдаёт данные через API, фронтенд (Next.js, Astro, Vue) рендерит так, как нужно. Подход выгоден не всем — но в правильных кейсах экономит десятки часов разработки и снимает потолок производительности, в который рано или поздно упирается монолит.
+
+В статье разбираем, когда headless оправдан, какие категории CMS существуют (SaaS, self-hosted open-source, git-based), как они отличаются по модели данных, цене и доступности в РФ, делаем deep-dive по Payload CMS и показываем рабочую связку Next.js 15 Draft Mode + `revalidateTag` для мгновенной публикации без полного ребилда.
 
 ## Что такое headless CMS
 
@@ -15,8 +17,15 @@ Headless CMS отделяет хранение и редактирование �
 
 - Любой стек на фронте: **Next.js**, **Astro**, **Nuxt**, мобильное приложение, Telegram-бот.
 - Один источник контента для нескольких витрин (сайт + приложение + e-mail).
-- Лучшая производительность — фронт может быть полностью статикой через SSG.
+- Лучшая производительность — фронт может быть полностью статикой через SSG/ISR.
 - Гибкая модель данных: вы описываете схемы, а не подгоняете под чужие шаблоны.
+- Независимые релизы фронта и бэка: дизайн редизайнится без миграции БД.
+
+Минусы:
+
+- Нужно настраивать превью, кеш, ревалидацию — из коробки этого нет.
+- Контент-менеджер не видит «как будет на сайте» без дополнительной настройки Draft Mode.
+- Локализация и роли иногда требуют допиливания.
 
 ## Когда headless оправдан
 
@@ -24,6 +33,7 @@ Headless CMS отделяет хранение и редактирование �
 - Команде важна скорость и DX современных фреймворков.
 - Нужна тонкая SEO-настройка и контроль над разметкой.
 - Планируется рост: каталоги, многоязычность, фильтры, поиск.
+- Высокая нагрузка — статика через CDN держит миллионы запросов без апгрейда.
 
 ## Когда лучше остаться в монолите
 
@@ -32,55 +42,454 @@ Headless CMS отделяет хранение и редактирование �
 - Контент-менеджер привык к WordPress и не хочет переучиваться.
 - Бюджет жёстко ограничен и сроки 2 недели.
 
-## Обзор популярных headless CMS
+## Категории headless CMS
 
-**Strapi** — open-source, Node.js + Postgres. Хорошая админка из коробки, гибкие роли, REST и GraphQL API. Минус — размер бандла плагинов и обновления, ломающие совместимость. Хостится на своём сервере.
+Headless-решения делятся на три большие группы. Внутри каждой — свои компромиссы.
 
-**Directus** — open-source, Node.js + любая SQL-база. Подключается к существующей БД и даёт админку поверх. Подходит, когда у вас уже есть схема данных.
+**SaaS (облачные)**: Sanity, Contentful, Storyblok, DatoCMS, Hygraph. Платите за подписку, не думаете об инфраструктуре. Минусы: vendor lock-in, оплата зарубежными картами, потенциальные проблемы с 152-ФЗ.
 
-**Payload CMS** — TypeScript-first, React-админка, MongoDB или Postgres. Очень удобен для команд, пишущих на TS. Активно развивается с 2024 года.
+**Self-hosted open-source**: Strapi, Directus, Payload, Keystone. Разворачиваете у себя, контроль полный, нет ограничений на запросы и поля. Минусы: бэкапы, апдейты, мониторинг — на вас.
 
-**Sanity** — облачный, с собственным языком запросов GROQ. Сильная сторона — *real-time collaboration* в админке. Минус — облако, не self-hosted.
+**Git-based**: Decap CMS (бывший Netlify CMS), Tina. Контент хранится как Markdown/JSON в git-репозитории, админка коммитит правки. Подходит для блогов и документации, не подходит для динамического контента и больших каталогов.
 
-**Contentful**, **Storyblok** — облачные коммерческие, мощные, но привязка к вендору и оплата в валюте.
+## Сравнительная таблица
 
-<InlineCTA>Поможем спроектировать архитектуру под нагрузку</InlineCTA>
+Главные параметры — модель данных, API, превью, локализация, цена, hosting и доступность оплаты в РФ:
+
+| CMS | Тип | API | Preview | i18n | Цена (старт) | Hosting | Lock-in | Оплата в РФ |
+|---|---|---|---|---|---|---|---|---|
+| Sanity | SaaS | GROQ + GraphQL | Native | Plugin | Free → $99/мес | Cloud | Средний (GROQ) | Сложно |
+| Contentful | SaaS | REST + GraphQL | Native | Native | Free → $300/мес | Cloud | Высокий | Сложно |
+| Storyblok | SaaS | REST | Visual editor | Native | Free → $99/мес | Cloud | Средний | Сложно |
+| DatoCMS | SaaS | GraphQL | Native | Native | Free → $99/мес | Cloud | Средний | Сложно |
+| Hygraph | SaaS | GraphQL | Native | Native | Free → $299/мес | Cloud | Высокий (GQL-only) | Сложно |
+| Strapi | OSS | REST + GraphQL | Plugin | Native | Free / $99 Cloud | Self / Cloud | Низкий | Без проблем |
+| Directus | OSS | REST + GraphQL | Custom | Native | Free / $99 Cloud | Self / Cloud | Низкий | Без проблем |
+| Payload | OSS | REST + GraphQL + Local | Native | Native | Free / Payload Cloud | Self / Cloud | Низкий (TS-код) | Без проблем |
+| Keystone | OSS | GraphQL | Custom | Plugin | Free | Self | Низкий | Без проблем |
+| Decap CMS | Git | Git commits | Branch deploy | Manual | Free | Static | Очень низкий | Без проблем |
+| Tina | Git/SaaS | GraphQL | Visual | Plugin | Free → $29/мес | Self / Cloud | Низкий | Сложно (SaaS) |
+
+Сжатые комментарии:
+
+- **Sanity** — облачный, GROQ-запросы, real-time collaboration, мощный Studio. Минус: язык запросов нестандартный, нужна привычка.
+- **Contentful** — самый «энтерпрайзный», богатые роли и воркфлоу. Free-тариф жёсткий по лимитам записей.
+- **Storyblok** — визуальный редактор с превью «прямо на странице», маркетинг-команды любят.
+- **DatoCMS** — простой GraphQL, отличный DX, цена кусается на росте.
+- **Hygraph** — GraphQL-нативный, content federation. Подходит для микросервисов.
+- **Strapi v5** — лидер по адопции в РФ, плагины, кастомизация на JS.
+- **Directus** — кладётся на любую существующую SQL-базу как админка.
+- **Payload** — TypeScript-first, схема как код, см. deep-dive ниже.
+- **Keystone** — GraphQL + Prisma, гибкий, но сообщество меньше.
+- **Decap** — для блогов и документации на статике.
+- **Tina** — git-backed с визуальным редактором, неплохой компромисс.
+
+<InlineCTA>Подберём CMS под бюджет и команду</InlineCTA>
+
+## Deep-dive: Payload CMS
+
+Payload — наиболее интересное решение последних двух лет. В отличие от Strapi, где схема задаётся через UI и хранится в JSON-конфигах, в Payload **схема — это TypeScript-код**. Это даёт автогенерацию типов, отсутствие рассинхронов между БД и фронтом, полноценный code review схемы в Pull Request.
+
+### Схема как код
+
+Коллекция в Payload — это объект с полями, хуками и access-control:
+
+```ts
+// collections/Posts.ts
+import type { CollectionConfig } from 'payload'
+
+export const Posts: CollectionConfig = {
+  slug: 'posts',
+  admin: {
+    useAsTitle: 'title',
+    defaultColumns: ['title', 'status', 'publishedAt'],
+  },
+  versions: { drafts: true },
+  access: {
+    read: ({ req }) =>
+      req.user ? true : { status: { equals: 'published' } },
+    create: ({ req }) => Boolean(req.user),
+    update: ({ req }) => Boolean(req.user),
+  },
+  fields: [
+    { name: 'title', type: 'text', required: true, localized: true },
+    { name: 'slug', type: 'text', required: true, unique: true, index: true },
+    {
+      name: 'status',
+      type: 'select',
+      defaultValue: 'draft',
+      options: ['draft', 'published'],
+    },
+    { name: 'publishedAt', type: 'date' },
+    { name: 'cover', type: 'upload', relationTo: 'media' },
+    { name: 'body', type: 'richText', localized: true },
+    {
+      name: 'author',
+      type: 'relationship',
+      relationTo: 'users',
+      required: true,
+    },
+  ],
+  hooks: {
+    beforeChange: [
+      ({ data, req }) => {
+        if (data.status === 'published' && !data.publishedAt) {
+          data.publishedAt = new Date().toISOString()
+        }
+        return data
+      },
+    ],
+  },
+}
+```
+
+Типы генерируются командой `payload generate:types` — фронт получает строго типизированный `Post`, без `any`.
+
+### Local API vs REST/GraphQL
+
+Главное преимущество — **Local API**. Когда Payload и Next.js живут в одном процессе (Payload 3.0 встраивается в App Router как набор роутов), вы вызываете БД напрямую, без HTTP:
+
+```ts
+// app/blog/[slug]/page.tsx
+import { getPayload } from 'payload'
+import config from '@payload-config'
+
+export default async function PostPage({
+  params,
+}: {
+  params: Promise<{ slug: string }>
+}) {
+  const { slug } = await params
+  const payload = await getPayload({ config })
+
+  const { docs } = await payload.find({
+    collection: 'posts',
+    where: { slug: { equals: slug } },
+    limit: 1,
+    depth: 2,
+  })
+
+  const post = docs[0]
+  if (!post) return <div>Не найдено</div>
+
+  return <article>{/* ... */}</article>
+}
+```
+
+Минус сетевого хопа — это десятки миллисекунд экономии на каждом запросе. REST и GraphQL остаются для внешних потребителей (мобильное приложение, другой фронт).
+
+### Hooks и access control
+
+Хуки `beforeChange`, `afterChange`, `beforeRead`, `afterDelete` позволяют встраивать бизнес-логику без отдельного бэкенда: отправить вебхук, пересчитать derived-поля, инвалидировать кеш Next.js.
+
+```ts
+hooks: {
+  afterChange: [
+    async ({ doc, operation }) => {
+      if (operation === 'update' || operation === 'create') {
+        await fetch(`${process.env.SITE_URL}/api/revalidate`, {
+          method: 'POST',
+          headers: { 'x-secret': process.env.REVALIDATE_SECRET! },
+          body: JSON.stringify({ tag: `post-${doc.id}` }),
+        })
+      }
+    },
+  ],
+},
+```
+
+Access control — функции, возвращающие `true`, `false` или query-фильтр (как в примере выше: «незалогиненные видят только published»).
+
+### Payload Cloud vs self-host
+
+- **Self-host**: Docker-образ, любой Postgres/MongoDB, любой VPS. Никаких лимитов, бесплатно.
+- **Payload Cloud**: managed-хостинг от авторов, $35/мес за проект. Удобен для небольших команд, но для РФ-инфраструктуры нерелевантен.
+
+### Плагины
+
+Экосистема растёт: `@payloadcms/plugin-stripe` (платежи и подписки), `@payloadcms/plugin-form-builder` (конструктор форм с админки), `@payloadcms/plugin-seo` (мета-теги), `@payloadcms/plugin-search` (полнотекстовый поиск).
+
+## Sanity: GROQ-запросы
+
+GROQ — декларативный язык запросов Sanity. Лаконичен и мощен, но требует привыкания:
+
+```ts
+// lib/sanity.ts
+import { createClient } from '@sanity/client'
+
+export const client = createClient({
+  projectId: process.env.SANITY_PROJECT_ID!,
+  dataset: 'production',
+  apiVersion: '2025-01-01',
+  useCdn: false,
+})
+
+const query = `*[_type == "post" && slug.current == $slug][0]{
+  title,
+  "slug": slug.current,
+  publishedAt,
+  body,
+  "author": author->{name, "avatar": avatar.asset->url},
+  "categories": categories[]->title
+}`
+
+export async function getPost(slug: string) {
+  return client.fetch(query, { slug })
+}
+```
+
+GROQ умеет джойны через `->`, проекции, фильтры — то, ради чего обычно тащат GraphQL, тут делается короче.
+
+## Strapi: REST из коробки
+
+```ts
+// lib/strapi.ts
+const STRAPI_URL = process.env.STRAPI_URL!
+const TOKEN = process.env.STRAPI_TOKEN!
+
+export async function getPost(slug: string) {
+  const res = await fetch(
+    `${STRAPI_URL}/api/posts?filters[slug][$eq]=${slug}&populate=*`,
+    {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      next: { tags: [`post-${slug}`], revalidate: 3600 },
+    },
+  )
+  if (!res.ok) throw new Error('Strapi fetch failed')
+  const json = await res.json()
+  return json.data[0]
+}
+```
+
+Strapi возвращает данные в обёртке `{ data, meta }`, при работе с TypeScript удобно обернуть это в свой тип.
+
+## Storyblok: блочный контент
+
+Storyblok строит страницу из блоков (bloks), которые редактор перетаскивает в визуальном редакторе:
+
+```ts
+// lib/storyblok.ts
+import { storyblokInit, apiPlugin, getStoryblokApi } from '@storyblok/react/rsc'
+
+storyblokInit({
+  accessToken: process.env.STORYBLOK_TOKEN,
+  use: [apiPlugin],
+})
+
+export async function getStory(slug: string, isDraft = false) {
+  const api = getStoryblokApi()
+  const { data } = await api.get(`cdn/stories/${slug}`, {
+    version: isDraft ? 'draft' : 'published',
+  })
+  return data.story
+}
+```
+
+Каждый «блок» — отдельный React-компонент. Маркетологи собирают лендинги без разработчика.
+
+## Next.js 15 Draft Mode + revalidateTag
+
+Это ключевая связка для headless-сайта на Next.js. Draft Mode позволяет редактору видеть черновик ровно так, как он будет выглядеть в проде, а `revalidateTag` обновляет кеш конкретной записи без полного ребилда.
+
+### Включение Draft Mode
+
+Создаём роут, в который CMS перебрасывает редактора с токеном:
+
+```ts
+// app/api/preview/route.ts
+import { draftMode } from 'next/headers'
+import { redirect } from 'next/navigation'
+
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url)
+  const secret = searchParams.get('secret')
+  const slug = searchParams.get('slug')
+
+  if (secret !== process.env.PREVIEW_SECRET || !slug) {
+    return new Response('Invalid token', { status: 401 })
+  }
+
+  const draft = await draftMode()
+  draft.enable()
+
+  redirect(`/blog/${slug}`)
+}
+```
+
+И роут для выхода из Draft Mode:
+
+```ts
+// app/api/preview/exit/route.ts
+import { draftMode } from 'next/headers'
+import { redirect } from 'next/navigation'
+
+export async function GET() {
+  const draft = await draftMode()
+  draft.disable()
+  redirect('/')
+}
+```
+
+В странице блога проверяем флаг и подгружаем черновик:
+
+```ts
+// app/blog/[slug]/page.tsx
+import { draftMode } from 'next/headers'
+
+export default async function Post({
+  params,
+}: {
+  params: Promise<{ slug: string }>
+}) {
+  const { slug } = await params
+  const { isEnabled } = await draftMode()
+
+  const post = await fetch(
+    `${process.env.CMS_URL}/posts/${slug}${isEnabled ? '?draft=true' : ''}`,
+    {
+      next: {
+        tags: [`post-${slug}`],
+        revalidate: isEnabled ? 0 : 3600,
+      },
+    },
+  ).then((r) => r.json())
+
+  return <article>{/* ... */}</article>
+}
+```
+
+### Тегирование fetch и revalidateTag
+
+Каждый запрос помечаем тегом — потом этот тег инвалидируем по вебхуку из CMS:
+
+```ts
+// app/api/revalidate/route.ts
+import { revalidateTag } from 'next/cache'
+import { NextRequest, NextResponse } from 'next/server'
+
+export async function POST(req: NextRequest) {
+  const secret = req.headers.get('x-secret')
+  if (secret !== process.env.REVALIDATE_SECRET) {
+    return NextResponse.json({ ok: false }, { status: 401 })
+  }
+
+  const { tag, slug } = await req.json()
+
+  if (tag) revalidateTag(tag)
+  if (slug) revalidateTag(`post-${slug}`)
+
+  return NextResponse.json({ ok: true, revalidated: tag ?? slug })
+}
+```
+
+Дальше настраиваем вебхук в админке CMS на `https://site.ru/api/revalidate` с заголовком `x-secret`. В Sanity это «Webhooks» в управлении проектом, в Strapi — раздел «Webhooks», в Payload — хук `afterChange` (см. выше).
+
+Результат: редактор нажимает «Опубликовать», вебхук стреляет, конкретная запись обновляется на сайте за 200–500 мс. Полный ребилд не нужен.
+
+<InlineCTA>Внедрим preview и инвалидацию кеша под вашу CMS</InlineCTA>
 
 ## Своя админка вместо headless CMS
 
-Если ваш контент — это не «статьи и страницы», а специфические сущности (объекты недвижимости, лоты, расписания), часто проще написать **собственную админку**. Стек: **Next.js** с защищённым роутом `/admin`, *NextAuth* или собственная сессия, **Postgres**, *react-hook-form* + *Zod* для валидации.
+Если ваш контент — это не «статьи и страницы», а специфические сущности (объекты недвижимости, лоты, расписания, медкарты), часто проще написать **собственную админку**. Стек: **Next.js** с защищённым роутом `/admin`, *NextAuth* или собственная сессия, **Postgres** + Prisma/Drizzle, *react-hook-form* + *Zod* для валидации.
 
-Плюс: вы не платите за лишние функции и не подстраиваете модель под чужой каркас. Минус: больше работы на старте.
+Плюс: вы не платите за лишние функции и не подстраиваете модель под чужой каркас. Минус: больше работы на старте — нужно сделать список, фильтры, экспорт, роли руками.
 
-## Технические аспекты
+Эвристика: если ядро домена не «контент», а «бизнес-объекты с жизненным циклом» — пишите своё. Если ядро — лонгриды, страницы, лендинги — берите готовое.
 
-- **Кэширование** — Next.js App Router с *ISR* или *fetch* с `revalidate` снимает нагрузку на CMS. Картинки — через CDN.
-- **Превью** — для редактора важна возможность видеть черновики; в Next.js — *Draft Mode*.
-- **Локализация** — у Strapi/Directus/Payload это встроено; в самописе — отдельный модуль.
-- **Бэкапы** — БД CMS бэкапится наравне с продуктовой.
+## Сценарии выбора
 
-## Что в сухом остатке
+- **Маркетинговый сайт, блог, лендинги**: Storyblok (визуальный редактор) или Sanity (для команды разработчиков).
+- **Контент-портал, медиа, новости**: Strapi или Payload — много полей, роли редакторов, версионирование.
+- **E-commerce**: специализированные headless — Saleor, Medusa, Shopify Hydrogen. Обычная CMS не покроет корзину и платежи.
+- **On-prem обязателен (152-ФЗ, банк, госзаказ)**: Payload, Strapi, Directus — self-host в РФ-облаке.
+- **Документация, тех-блог в git**: Decap CMS или просто Markdown в репозитории.
+- **Мульти-бренд / мульти-сайт**: Hygraph (content federation), Storyblok (spaces).
 
-Headless CMS оправдана, когда контент идёт в несколько каналов или важна свобода фронтенда. Для простого блога — это оверкилл, лучше WordPress или Astro+MD. Для специфической предметной области своя админка обычно эффективнее. Когда выбираете готовое решение — смотрите на Strapi (open-source) и Payload (TS-first); оба self-hosted, что важно для соответствия 152-ФЗ.
+## Производительность и кеш
+
+Без правильно настроенного кеша headless-сайт **медленнее монолита**, потому что фронт ходит в API на каждый запрос. Принципы:
+
+- **ISR + теги кеша** — собрали страницу один раз, отдаём из CDN, инвалидируем по вебхуку.
+- **Edge delivery** — Vercel Edge, Cloudflare Workers, Yandex Cloud CDN.
+- **Картинки через `next/image`** + CDN CMS (Sanity, Cloudinary, Imgix) — конвертация в AVIF/WebP, ресайз на лету.
+- **Не делайте `useCdn: false`** для прод-чтений в Sanity — CDN ускоряет в разы.
+- **GraphQL persisted queries** в Hygraph и DatoCMS снижают payload и ускоряют кеширование.
+
+## DX: типы, миграции, версионирование
+
+- **Типы**: Payload генерирует автоматически, Sanity — через `sanity-codegen`/`sanity typegen`, Strapi — через `strapi-plugin-types`.
+- **Миграции схемы**: Payload сохраняет конфиг в коде → миграции идут через PR + `payload migrate`. Strapi — через UI, конфиг в JSON, миграция между средами через дамп. Sanity — schema в коде, deploy командой `sanity deploy`.
+- **Версионирование контента**: native в Payload и Sanity, plugin в Strapi.
+
+## Локализация
+
+- **Native i18n**: Contentful, Storyblok, DatoCMS, Hygraph, Payload, Strapi, Directus — поле помечается `localized: true`, переводчик видит вкладки языков.
+- **Custom-fields подход**: Sanity использует объекты `{ ru: '...', en: '...' }` или плагин `@sanity/document-internationalization`.
+- **На фронте**: связка с `next-intl` или `next-i18next`, маршрутизация `/ru/...` / `/en/...`.
+
+## Migration: с WordPress на headless
+
+Чаще всего миграция выглядит так:
+
+1. Экспорт WP через WP REST API или WXR-дамп.
+2. Парсинг и трансформация в скрипт-импортёр под целевую CMS (Payload `payload.create()`, Strapi REST, Sanity `@sanity/client`).
+3. Перенос медиа: скачать в `uploads/`, загрузить в новую CMS.
+4. Сохранить старые URL → 301-редиректы в `next.config.js` или nginx.
+5. Перенести SEO-мета (title, description, canonical) из Yoast/RankMath.
+
+На контент-портал в 5–10 тыс. статей миграция занимает 1–2 недели работы одного разработчика.
+
+## Russian context: оплата и хостинг
+
+- **SaaS** (Sanity, Contentful, Storyblok, DatoCMS, Hygraph) — оплата только зарубежными картами или через посредников. Для российского ИП/ООО неудобно.
+- **Self-hosted** (Strapi, Directus, Payload) — разворачиваются в Yandex Cloud, Selectel, VK Cloud. Никаких ограничений. Лицензии MIT.
+- **152-ФЗ**: при сборе ПДн данные должны лежать на серверах в РФ. SaaS с серверами за рубежом — потенциальный риск, нужна юридическая экспертиза. Self-host закрывает вопрос полностью.
+
+## Антипаттерны
+
+- **Монолитная схема `Page` с 50 полями**. Все типы страниц в одной коллекции с кучей optional-полей. Решение: разделить на `LandingPage`, `BlogPost`, `ProductPage`, общее вынести в blocks.
+- **Нет Draft Mode**. Редактор публикует «вслепую», правит после релиза. Решение: настроить preview с первого дня.
+- **Нет тегов кеша**. Каждое изменение требует полного ребилда сайта на 5 минут. Решение: `revalidateTag` + вебхук.
+- **Прямые запросы из браузера**. Токен CMS утекает в клиентский бандл. Решение: всегда через Server Components / API-роут.
+- **Хардкод URL картинок**. Меняете CDN — переписываете всю БД. Решение: хранить только asset ID, URL собирать на лету.
+- **Игнорирование ролей**. Все редакторы — админы, любой может удалить коллекцию. Решение: минимум три роли (viewer/editor/admin).
+
+## Стоимость
+
+Грубый ориентир на год:
+
+- **SaaS Free → Pro**: $0 → $300–600/мес, на росте $1000+/мес.
+- **SaaS Enterprise**: $2000–10 000/мес (Contentful, Hygraph), индивидуальный контракт.
+- **Self-host**: VPS от 1500 ₽/мес (2 vCPU, 4 GB RAM, Postgres) + время на администрирование. Для нагрузок до 100k запросов/день этого хватает.
+- **Своя админка**: 80–200 часов разработки + поддержка, инфраструктура та же.
+
+## Итого
+
+Headless CMS оправдана, когда контент идёт в несколько каналов, важна свобода фронтенда или нужна высокая нагрузка через статику. Для простого блога — оверкилл, лучше WordPress или Astro+MD. Для специфической предметной области своя админка обычно эффективнее.
+
+Когда выбираете готовое: Payload — лучший вариант для команд на TypeScript, Strapi — самый зрелый open-source, Storyblok/Sanity — для маркетинговых сайтов. Для российского контекста с требованиями 152-ФЗ — только self-hosted (Payload, Strapi, Directus) в РФ-облаке. Не забудьте с первого дня настроить Draft Mode и `revalidateTag` — иначе заплатите за это в первый же месяц поддержки.
 
 <Faq>
   <FaqItem q="Что такое headless CMS и чем она отличается от обычной?">
-    Headless CMS отделяет хранение и редактирование контента от его отображения. Бэкенд отдаёт данные через API, фронтенд (Next.js, Astro, Vue) рендерит как нужно. В классической CMS (WordPress, Bitrix, MODX) бэкенд и фронтенд связаны — тема пишется внутри CMS. В headless-подходе CMS — это только админка и API, сайт отдельное приложение на любом фреймворке. Плюсы: любой стек на фронте, один источник контента для нескольких витрин, лучшая производительность через SSG, гибкая модель данных.
+    Headless CMS отделяет хранение и редактирование контента от его отображения. Бэкенд отдаёт данные через API (REST или GraphQL), фронтенд (Next.js, Astro, Vue, мобильное приложение) рендерит их как нужно. В классической CMS (WordPress, Bitrix, MODX) бэкенд и фронтенд связаны — тема пишется внутри CMS. В headless-подходе CMS — это только админка и API, а сайт — отдельное приложение на любом стеке. Плюсы: один источник контента для нескольких витрин, лучшая производительность через SSG/ISR, гибкая модель данных, независимые релизы фронта и бэка.
   </FaqItem>
-  <FaqItem q="Когда headless CMS оправдана, а когда нет?">
-    Headless оправдан если: контент идёт в несколько каналов (веб, мобильное приложение, email-рассылки); команде важна скорость и DX современных фреймворков; нужна тонкая SEO-настройка и контроль над разметкой; планируется рост (каталоги, многоязычность, фильтры, поиск). Лучше остаться в монолите если: простой блог или корпоративный сайт без интеграций; команда не имеет фронтенд-разработчика; контент-менеджер привык к WordPress; бюджет жёстко ограничен и сроки 2 недели.
+  <FaqItem q="Какую headless CMS выбрать под Next.js в 2026 году?">
+    Для команды на TypeScript — Payload CMS: схема как код, Local API без сетевого хопа, native preview, плагины (Stripe, Form Builder, SEO). Для маркетингового сайта с визуальным редактором — Storyblok или Sanity. Для контент-портала с большим числом редакторов и ролей — Strapi v5. Для on-prem и 152-ФЗ — Payload, Strapi или Directus, развёрнутые в Yandex Cloud или Selectel. Для документации в git — Decap CMS или просто Markdown в репозитории.
   </FaqItem>
-  <FaqItem q="Какие популярные headless CMS существуют?">
-    Strapi — open-source, Node.js + Postgres, хорошая админка, REST и GraphQL API; минус — размер бандла плагинов и обновления, ломающие совместимость. Directus — open-source, подключается к существующей БД и даёт админку поверх. Payload CMS — TypeScript-first, React-админка, MongoDB или Postgres, удобен для команд на TS. Sanity — облачный, real-time collaboration в админке, минус облако. Contentful, Storyblok — облачные коммерческие, мощные, но привязка к вендору и оплата в валюте.
+  <FaqItem q="Как устроена связка Draft Mode + revalidateTag в Next.js 15?">
+    Создаёте роут /api/preview, который проверяет секрет и вызывает draftMode().enable(), затем редиректит на нужную страницу. На странице через draftMode() читаете флаг isEnabled и подгружаете черновик из CMS. Каждый fetch помечаете тегом: `fetch(url, { next: { tags: ['post-123'] } })`. В админке CMS настраиваете вебхук на /api/revalidate, который вызывает `revalidateTag('post-123')`. Результат: редактор жмёт «Опубликовать», конкретная страница обновляется за 200–500 мс без полного ребилда сайта.
   </FaqItem>
-  <FaqItem q="Когда лучше написать свою админку вместо headless CMS?">
-    Если ваш контент — это не «статьи и страницы», а специфические сущности (объекты недвижимости, лоты, расписания), часто проще написать собственную админку. Стек: Next.js с защищённым роутом /admin, NextAuth или собственная сессия, Postgres, react-hook-form + Zod для валидации. Плюс: вы не платите за лишние функции и не подстраиваете модель под чужой каркас. Минус: больше работы на старте. Своя админка часто эффективнее на 30–50% для специфической предметной области.
-  </FaqItem>
-  <FaqItem q="Какие технические аспекты важны при выборе headless CMS?">
-    Четыре пункта. Кэширование — Next.js App Router с ISR или fetch с revalidate снимает нагрузку на CMS, картинки через CDN. Превью — для редактора важна возможность видеть черновики, в Next.js это Draft Mode. Локализация — у Strapi/Directus/Payload встроена; в самописе отдельный модуль. Бэкапы — БД CMS бэкапится наравне с продуктовой. Без правильно настроенного кэша headless-сайт медленнее монолита, потому что фронт лазит в API на каждый запрос.
+  <FaqItem q="Чем Payload CMS отличается от Strapi?">
+    Главное отличие — схема. В Payload коллекции описываются TypeScript-кодом и попадают в репозиторий, миграции идут через Pull Request, типы генерируются автоматически. В Strapi схема правится в админке и хранится в JSON-конфигах, при переносе между средами нужно дампить и накатывать. Второе — Local API: Payload встраивается в Next.js App Router и вызывает БД напрямую без HTTP, что экономит десятки миллисекунд на запрос. Третье — TypeScript-first: все хуки, access-control, поля строго типизированы. Strapi выигрывает по зрелости плагинов и размеру сообщества.
   </FaqItem>
   <FaqItem q="Какую headless CMS выбрать для соответствия 152-ФЗ?">
-    Self-hosted решения. Strapi (open-source) — Node.js + Postgres, разворачивается в РФ-облаке (Yandex Cloud, Selectel). Directus — open-source, подключается к существующей БД, можно деплоить в РФ. Payload CMS — TypeScript-first, MongoDB или Postgres, тоже self-hosted. Все три позволяют разместить инфраструктуру в РФ и закрыть требования 152-ФЗ по локализации ПДн. Sanity, Contentful, Storyblok — облачные с серверами за рубежом, для проектов с ПДн граждан России неудобны.
+    Только self-hosted решения, развёрнутые на серверах в РФ. Strapi (open-source, Node.js + Postgres) — разворачивается в Yandex Cloud, Selectel, VK Cloud. Directus — open-source, подключается к существующей SQL-базе, можно деплоить в РФ. Payload CMS — TypeScript-first, MongoDB или Postgres, тоже self-hosted. Все три позволяют разместить инфраструктуру в РФ и закрыть требования 152-ФЗ по локализации ПДн. SaaS-решения (Sanity, Contentful, Storyblok, DatoCMS, Hygraph) с серверами за рубежом для проектов с ПДн граждан России неудобны — потребуется юридическая экспертиза и уведомление РКН о трансграничной передаче.
+  </FaqItem>
+  <FaqItem q="Когда лучше написать свою админку вместо headless CMS?">
+    Если ваш контент — не «статьи и страницы», а специфические бизнес-объекты с жизненным циклом (объекты недвижимости, лоты, расписания, медкарты, заявки), часто проще написать собственную админку. Стек: Next.js с защищённым роутом /admin, NextAuth или собственная сессия, Postgres + Prisma/Drizzle, react-hook-form + Zod для валидации. Плюс: вы не платите за лишние функции и не подстраиваете модель под чужой каркас, бизнес-логика рядом с UI. Минус: больше работы на старте — список, фильтры, экспорт, роли пишутся руками. Бюджет 80–200 часов разработки.
+  </FaqItem>
+  <FaqItem q="Сколько стоит headless CMS в год?">
+    SaaS-тарифы: Free для пет-проектов и MVP, Pro $99–300/мес (Sanity, Storyblok, DatoCMS), Enterprise $2000–10 000/мес (Contentful, Hygraph). Self-hosted (Strapi, Directus, Payload): сама CMS бесплатна по MIT-лицензии, инфраструктура — VPS от 1500 ₽/мес (2 vCPU, 4 GB RAM, Postgres), для нагрузок до 100k запросов/день этого достаточно. Своя админка: 80–200 часов разработки на старте плюс поддержка, инфраструктура та же. На дистанции в год для среднего проекта self-host выходит в 5–10 раз дешевле облачного SaaS.
   </FaqItem>
 </Faq>
 

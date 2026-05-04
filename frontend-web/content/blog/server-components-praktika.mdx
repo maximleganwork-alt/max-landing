@@ -5,97 +5,519 @@ date: "2026-03-30"
 tags: ["сайт", "разработка", "стек"]
 ---
 
-React Server Components изменили подход к рендерингу. Но в команде часто возникает вопрос: «когда серверный, когда клиентский?». Разберём, как мы это решаем на практике.
+React Server Components изменили подход к рендерингу. Но в команде часто возникает вопрос: «когда серверный, когда клиентский?». Разберём, как мы это решаем на практике — с паттернами композиции, обработкой ошибок, кешированием и разбором типичных грабель, на которые наступает почти каждая команда в первые месяцы работы с App Router.
+
+Материал — конспект подходов, выработанных на десятках проектов: маркетинговые лендинги, кабинеты, e-commerce, дашборды. Везде RSC даёт меньше JS в браузере и быстрее первый рендер, но требует другой архитектурной дисциплины — и об этом большая часть статьи.
 
 ## Что такое Server Component
 
-Server Component рендерится на сервере, в браузер уходит уже готовый HTML и сериализованное дерево. Никакого JS-бандла для этого компонента в клиенте — он просто не нужен. Импорт серверных модулей (БД, файловая система, секреты) — без проблем, потому что код никогда не дойдёт до браузера.
+Server Component рендерится на сервере, в браузер уходит уже готовый HTML и сериализованное дерево (RSC payload в формате React Flight). Никакого JS-бандла для этого компонента в клиенте — он просто не нужен. Импорт серверных модулей (БД, файловая система, секреты) — без проблем, потому что код никогда не дойдёт до браузера.
 
-По умолчанию в App Router все компоненты — серверные. Чтобы сделать клиентский, в начало файла добавляется `"use client"`. Это директива не для одного компонента, а для всего модуля и его импортов вниз по дереву.
+По умолчанию в App Router все компоненты — серверные. Чтобы сделать клиентский, в начало файла добавляется `"use client"`. Это директива не для одного компонента, а для всего модуля и его импортов вниз по дереву: всё, что импортируется из файла с `"use client"`, попадает в клиентский бандл.
 
-## Когда Server Component — правильный выбор
+Ключевая мысль: граница «server / client» проходит не по компонентам, а по модулям. Один и тот же компонент может рендериться и как серверный, и как клиентский — зависит от того, откуда его импортировали.
 
-Чтение данных, рендер статики, формирование HTML с серверной логикой. Любая страница списка, карточка товара, статья блога, главная — всё это Server Components.
+## Async/await прямо в компоненте
 
-Преимущества: меньший JS-бандл (часто 30-50% от Pages Router), быстрее TTI и FCP, безопасный доступ к секретам и БД, удобный async/await прямо в компоненте.
+Серверный компонент может быть async-функцией. Это убирает целый класс проблем: больше не нужны useEffect для загрузки, не нужны библиотеки типа SWR/React Query для серверного фетча, не нужно отдельных API-роутов для собственного приложения.
 
 ```tsx
 async function ProductPage({ params }) {
-  const product = await db.product.findUnique({ where: { slug: params.slug } });
+  const product = await db.product.findUnique({
+    where: { slug: params.slug },
+  });
+  if (!product) notFound();
   return <Product data={product} />;
 }
 ```
 
+Параллельные запросы делаются через `Promise.all` — иначе они выполнятся последовательно (water­fall) и страница станет медленной.
+
+```tsx
+async function Page({ params }) {
+  const [product, reviews, related] = await Promise.all([
+    getProduct(params.slug),
+    getReviews(params.slug),
+    getRelated(params.slug),
+  ]);
+  return <Layout product={product} reviews={reviews} related={related} />;
+}
+```
+
+## Когда Server Component — правильный выбор
+
+Чтение данных, рендер статики, формирование HTML с серверной логикой. Любая страница списка, карточка товара, статья блога, главная — всё это Server Components. Признаки: компонент только читает данные и возвращает разметку, нет обработчиков событий, нет состояния, не нужен доступ к window/document.
+
+Преимущества: меньший JS-бандл (часто 30-50% от Pages Router), быстрее TTI и FCP, безопасный доступ к секретам и БД, удобный async/await прямо в компоненте, естественный SEO без дополнительных усилий.
+
 ## Когда нужен Client Component
 
-Любой интерактив: формы с состоянием, кнопки с onClick, drag-and-drop, анимации, использующие refs, react-spring или framer-motion. Хуки `useState`, `useEffect`, `useReducer` работают только в клиентских компонентах.
+Любой интерактив: формы с состоянием, кнопки с onClick, drag-and-drop, анимации, использующие refs, react-spring или framer-motion. Хуки `useState`, `useEffect`, `useReducer`, `useContext`, `useRef` работают только в клиентских компонентах. Любые библиотеки, которые трогают DOM напрямую (карты, графики, видеоплееры) — тоже клиентские.
+
+Критерий: если компоненту нужно что-то «знать» о пользователе после загрузки страницы (что он нажал, что ввёл, куда проскроллил) — это Client Component.
 
 <InlineCTA>Реализуем веб-проект на современном Next.js за 4-8 недель</InlineCTA>
 
-Не пытайтесь сделать всё клиентским «на всякий случай» — это убивает основное преимущество архитектуры. Лучше: серверный layout, серверная страница, и точечно подключаются клиентские островки для интерактива.
+Не пытайтесь сделать всё клиентским «на всякий случай» — это убивает основное преимущество архитектуры. Лучше: серверный layout, серверная страница, и точечно подключаются клиентские островки для интерактива. На практике соотношение Server / Client кода в проекте — 70/30 или 80/20.
 
 ## Композиция: серверный родитель, клиентский ребёнок
 
 Базовый паттерн: родительский Server Component делает запросы и передаёт данные через props в клиентский компонент. Клиентский компонент уже может работать со state, формами, обработчиками.
 
 ```tsx
-async function Page() {
-  const data = await getData();
-  return <ClientForm initialData={data} />;
+// app/products/[slug]/page.tsx — Server
+async function Page({ params }) {
+  const product = await getProduct(params.slug);
+  return <AddToCartButton productId={product.id} price={product.price} />;
+}
+
+// components/AddToCartButton.tsx — Client
+"use client";
+export function AddToCartButton({ productId, price }) {
+  const [loading, setLoading] = useState(false);
+  return (
+    <button onClick={() => addToCart(productId)} disabled={loading}>
+      В корзину — {price} ₽
+    </button>
+  );
 }
 ```
 
-Обратное (клиентский родитель, серверный ребёнок) — невозможно напрямую. Можно через children: клиентский компонент принимает `{ children }`, а в него прокидывают серверный JSX из вышестоящего серверного компонента.
+Просто, но обратное (клиентский родитель, серверный ребёнок) — невозможно напрямую. Импорт серверного компонента в клиентский файл сломает сборку или исполнение. Для этого случая есть отдельный паттерн.
 
-## Сериализация props
+## Паттерн Server-Client-Server через children
 
-Передавая props из серверного в клиентский, помните: они сериализуются через React Flight Protocol. Можно передавать примитивы, массивы, объекты, Date, Map, Set, BigInt. Нельзя — функции (кроме Server Actions с `"use server"`), классы, React-элементы из неэкспортированных компонентов.
+Часто нужно: серверный контент завернуть в клиентский интерактивный wrapper. Например, аккордеон, модалка, табы, карусель — каркас должен реагировать на клики (Client), а внутри — серверные данные с async-фетчем.
 
-Передача больших объектов из БД — окей, но фильтруйте лишнее. Не нужно передавать весь юзер-объект с паролем хешем, выберите нужные поля заранее.
+Решение: клиентский компонент принимает `children` как ReactNode, а конкретный серверный JSX в эти `children` подкладывает вышестоящий серверный компонент.
+
+```tsx
+// components/Accordion.tsx — Client (каркас)
+"use client";
+import { useState } from "react";
+
+export function Accordion({ title, children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border rounded-md">
+      <button onClick={() => setOpen(!open)} className="w-full p-4 text-left">
+        {title}
+      </button>
+      {open && <div className="p-4 border-t">{children}</div>}
+    </div>
+  );
+}
+```
+
+```tsx
+// components/ProductDetails.tsx — Server (контент)
+async function ProductDetails({ id }) {
+  const details = await db.product.findUnique({
+    where: { id },
+    include: { specs: true, warranty: true },
+  });
+  return (
+    <dl>
+      {details.specs.map((s) => (
+        <div key={s.key}>
+          <dt>{s.key}</dt>
+          <dd>{s.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+```
+
+```tsx
+// app/products/[slug]/page.tsx — Server (родитель собирает оба)
+import { Accordion } from "@/components/Accordion";
+import { ProductDetails } from "@/components/ProductDetails";
+
+export default async function Page({ params }) {
+  const product = await getProduct(params.slug);
+  return (
+    <article>
+      <h1>{product.title}</h1>
+      <Accordion title="Характеристики">
+        <ProductDetails id={product.id} />
+      </Accordion>
+    </article>
+  );
+}
+```
+
+Что здесь происходит: `Accordion` — клиентский, ничего не знает про БД и async. `ProductDetails` — серверный, спокойно делает fetch. Серверная страница вызывает оба и передаёт серверный JSX в `children` клиентского компонента. На клиенте `children` уже сериализованы как готовое дерево, а интерактив каркаса (open/close) работает.
+
+Антипаттерн — попытаться импортировать серверный компонент напрямую в клиентский:
+
+```tsx
+// ПЛОХО — не работает
+"use client";
+import { ProductDetails } from "./ProductDetails"; // ошибка
+
+export function Accordion({ id }) {
+  const [open, setOpen] = useState(false);
+  return open ? <ProductDetails id={id} /> : null;
+}
+```
+
+В таком виде `ProductDetails` попадает в клиентский бандл и теряет возможность быть async. Правильно — поднять композицию на серверный уровень и пробросить через `children`.
+
+Альтернатива, когда данных немного — просто передать их как props. Но если данных много или их фетч дорогой, держите композицию через `children` и `cache()`.
+
+## error.tsx и обработка ошибок
+
+В App Router error boundary — это файл `error.tsx` в сегменте маршрута. Он автоматически оборачивает соседний `page.tsx` (и его дочерние сегменты) в Error Boundary. Файл должен быть клиентским — `"use client"` обязателен.
+
+```tsx
+// app/products/[slug]/error.tsx
+"use client";
+import { useEffect } from "react";
+
+export default function Error({ error, reset }) {
+  useEffect(() => {
+    console.error(error);
+  }, [error]);
+
+  return (
+    <div className="p-8 text-center">
+      <h2>Что-то пошло не так</h2>
+      <p className="text-fg-muted mt-2">{error.message}</p>
+      <button onClick={() => reset()} className="btn-primary mt-4">
+        Попробовать снова
+      </button>
+    </div>
+  );
+}
+```
+
+`reset()` — это попытка перерендерить сегмент, в котором случилась ошибка. Удобно для временных сбоев (упал API, сеть моргнула): пользователь нажимает «Попробовать снова», и без перезагрузки страницы запрос повторяется.
+
+Для ошибок на уровне корневого layout есть `global-error.tsx`. Он рендерится поверх всего, включая `<html>` и `<body>` (поэтому в нём нужно вернуть собственные `<html>` и `<body>`). Используется редко, но обязательно должен быть — на случай, если упадёт сам root layout.
+
+```tsx
+// app/global-error.tsx
+"use client";
+export default function GlobalError({ error, reset }) {
+  return (
+    <html lang="ru">
+      <body>
+        <h2>Критическая ошибка приложения</h2>
+        <button onClick={() => reset()}>Перезагрузить</button>
+      </body>
+    </html>
+  );
+}
+```
+
+## Suspense и streaming
+
+`loading.tsx` в сегменте автоматически оборачивает страницу в Suspense с указанным fallback. Пока серверный компонент ждёт данные, пользователь видит skeleton. Это базовый уровень — на всю страницу.
+
+Гранулярные границы — лучше: оборачивайте Suspense вокруг конкретных блоков, чтобы быстрая часть страницы рендерилась сразу, а медленная появлялась стримом.
+
+```tsx
+// app/dashboard/page.tsx
+import { Suspense } from "react";
+import { UserHeader } from "./UserHeader";
+import { RecentOrders } from "./RecentOrders";
+import { Recommendations } from "./Recommendations";
+
+export default async function Dashboard() {
+  return (
+    <div className="space-y-8">
+      <UserHeader />
+      <Suspense fallback={<OrdersSkeleton />}>
+        <RecentOrders />
+      </Suspense>
+      <Suspense fallback={<RecsSkeleton />}>
+        <Recommendations />
+      </Suspense>
+    </div>
+  );
+}
+```
+
+Если `RecentOrders` отвечает за 200мс, а `Recommendations` ходит во внешний API на 2 секунды — пользователь увидит заголовок и заказы за 200мс, а блок рекомендаций догонит сам, без задержки остального.
+
+Сочетание с `error.tsx`: если внутри Suspense-границы что-то упадёт, ошибка всплывёт до ближайшего Error Boundary. Можно явно ставить локальные boundary через `<ErrorBoundary>` (например, из `react-error-boundary`) — тогда падение одного блока не уронит остальные.
+
+## notFound() и not-found.tsx
+
+Для случая «ресурс не найден» в App Router есть пара: функция `notFound()` из `next/navigation` бросает специальную ошибку, а файл `not-found.tsx` — UI этой ошибки.
+
+```tsx
+// app/products/[slug]/page.tsx
+import { notFound } from "next/navigation";
+
+export default async function Page({ params }) {
+  const product = await getProduct(params.slug);
+  if (!product) notFound();
+  return <Product data={product} />;
+}
+
+// app/products/[slug]/not-found.tsx
+export default function NotFound() {
+  return (
+    <div className="p-8 text-center">
+      <h1>Товар не найден</h1>
+      <a href="/catalog">Перейти в каталог</a>
+    </div>
+  );
+}
+```
+
+`notFound()` корректно ставит HTTP-статус 404 — это важно для SEO. Не пишите вместо этого «404» прямо в JSX со статусом 200, поисковики такие страницы индексируют как валидные.
+
+<InlineCTA>Настроим RSC, error boundaries и кеш под нагрузку — ревью архитектуры от 1 дня</InlineCTA>
+
+## cache() из React: per-request мемоизация
+
+`cache()` — функция из самого React (не Next.js), которая мемоизирует результат вызова в рамках одного серверного рендера. Если три разных компонента в дереве вызывают `getUser(42)`, фактический fetch произойдёт один раз; остальные получат закешированный результат.
+
+```tsx
+// lib/data/user.ts
+import { cache } from "react";
+
+export const getUser = cache(async (id: string) => {
+  return db.user.findUnique({ where: { id } });
+});
+```
+
+```tsx
+// app/dashboard/layout.tsx — Server
+import { getUser } from "@/lib/data/user";
+export default async function Layout({ children }) {
+  const user = await getUser(currentUserId());
+  return (
+    <>
+      <Header user={user} />
+      {children}
+    </>
+  );
+}
+
+// app/dashboard/page.tsx — Server (тот же запрос)
+import { getUser } from "@/lib/data/user";
+export default async function Page() {
+  const user = await getUser(currentUserId());
+  return <Greeting user={user} />;
+}
+```
+
+Layout и page оба зовут `getUser` — но к БД пойдёт один запрос. Без `cache()` было бы два.
+
+Сравнение трёх механизмов кеша:
+
+- `cache()` (React) — мемоизация в рамках одного запроса. Идеально для дедупликации DB-вызовов внутри рендера. Сбрасывается на каждый новый запрос.
+- `unstable_cache` (Next.js) — кеш между запросами, с TTL и тегами. Для тяжёлых операций, результат которых валиден минуты или часы.
+- `fetch` с опциями `next.revalidate` или `next.tags` — то же самое, что `unstable_cache`, но конкретно для HTTP-запросов; интегрировано в `fetch` напрямую.
+
+Правило: внутри одного запроса дедуплицируйте через `cache()`. Кросс-запросное кеширование — через `unstable_cache` или `fetch` с тегами и `revalidateTag` для инвалидации.
+
+```tsx
+import { unstable_cache } from "next/cache";
+
+export const getCatalogStats = unstable_cache(
+  async () => db.product.aggregate({ _count: true, _avg: { price: true } }),
+  ["catalog-stats"],
+  { revalidate: 300, tags: ["catalog"] },
+);
+```
+
+## Сериализация props через React Flight
+
+Передавая props из серверного в клиентский, помните: они сериализуются через React Flight Protocol. Можно: примитивы (string, number, boolean, null, undefined), массивы и обычные объекты, Date, Map, Set, BigInt, TypedArray, Promise, JSX.
+
+Нельзя: функции (кроме Server Actions с `"use server"`), классы и их экземпляры, Symbol (кроме реестрового), React-элементы из неэкспортированных компонентов.
+
+```tsx
+// ХОРОШО
+<ClientForm
+  initialDate={new Date()}
+  permissions={new Set(["read", "write"])}
+  user={{ id: 1, name: "Аня" }}
+/>
+
+// ПЛОХО
+<ClientForm
+  onSubmit={(data) => save(data)}      // функция — нельзя
+  user={new UserModel(rawData)}        // класс — нельзя
+/>
+```
+
+Большие props через RSC payload — фильтруйте данные. Не нужно передавать весь юзер-объект с хешем пароля и служебными полями: выберите нужные поля заранее. Каждый байт props улетает в RSC payload и в HTML, а это вес страницы.
 
 ## Server Actions: формы без API
 
-Server Actions — серверные функции, которые можно вызывать из клиентских форм. Удобно для CRUD-операций без отдельных API-роутов.
+Server Actions — серверные функции, которые можно вызывать из клиентских форм или обработчиков. Удобно для CRUD без отдельных API-роутов.
 
 ```tsx
-async function createPost(formData: FormData) {
-  "use server";
-  const title = formData.get("title");
-  await db.post.create({ data: { title } });
+// app/posts/actions.ts
+"use server";
+import { revalidatePath } from "next/cache";
+import { z } from "zod";
+
+const PostSchema = z.object({ title: z.string().min(3) });
+
+export async function createPost(formData: FormData) {
+  const parsed = PostSchema.safeParse({ title: formData.get("title") });
+  if (!parsed.success) return { error: "Заголовок слишком короткий" };
+  await db.post.create({ data: parsed.data });
   revalidatePath("/posts");
+  return { ok: true };
 }
 ```
 
-Валидация — на сервере, всегда. Не доверяйте `FormData` от клиента: проверяйте через Zod, проверяйте права, проверяйте rate limit.
+```tsx
+// app/posts/NewPostForm.tsx
+"use client";
+import { createPost } from "./actions";
+export function NewPostForm() {
+  return (
+    <form action={createPost}>
+      <input name="title" />
+      <button type="submit">Создать</button>
+    </form>
+  );
+}
+```
 
-## Граничные случаи
+Валидация — на сервере, всегда. Не доверяйте `FormData` от клиента: проверяйте через Zod, проверяйте права, проверяйте rate limit. Server Actions автоматически создают POST-эндпоинт под капотом, поэтому всё, что в публичном API, действует и тут — CSRF-защита, ограничения, аудит.
 
-Серверный компонент не может использовать context, который определён в клиентских провайдерах. Workaround: оборачиваете дерево в клиентском провайдере, серверные компоненты передаются как children.
+Подробнее про связку Server Actions с формами и оптимистичными апдейтами — отдельная большая тема, разберём в следующих материалах.
 
-`useSearchParams` и `useRouter` — клиентские хуки. На сервере используйте `searchParams` через props страницы и `redirect`/`notFound` из `next/navigation`.
+## Типичные ошибки и как их избегать
+
+**1. Передача функции в Client Component (не Server Action).**
+
+```tsx
+// ПЛОХО — функция не сериализуется
+<ClientButton onAction={() => doSomething()} />
+
+// ХОРОШО — Server Action
+async function doSomething() {
+  "use server";
+  // ...
+}
+<ClientButton action={doSomething} />
+```
+
+**2. useState в файле без `"use client"`.**
+
+```tsx
+// ПЛОХО — упадёт при сборке
+import { useState } from "react";
+export function Counter() {
+  const [n, setN] = useState(0);
+  return <button onClick={() => setN(n + 1)}>{n}</button>;
+}
+
+// ХОРОШО — добавить директиву
+"use client";
+import { useState } from "react";
+// ...
+```
+
+**3. Импорт серверных модулей в клиентских.** Защититесь пакетом `server-only`: добавьте `import "server-only"` в начало модуля, который не должен попасть в клиент (БД-клиент, секреты). Если кто-то по ошибке импортирует его из клиентского файла, сборка упадёт явной ошибкой, а не утечёт в бандл.
+
+```tsx
+// lib/db.ts
+import "server-only";
+import { Pool } from "pg";
+export const db = new Pool({ connectionString: process.env.DATABASE_URL });
+```
+
+**4. Hydration mismatch.** Серверный HTML отличается от клиентского рендера. Самые частые причины:
+
+```tsx
+// ПЛОХО — Date.now() и Math.random() дают разные значения на сервере и клиенте
+<div>ID: {Math.random()}</div>
+<div>Время: {new Date().toLocaleString()}</div>
+
+// ПЛОХО — Intl без явной локали зависит от окружения
+new Intl.NumberFormat().format(1000); // на сервере "1,000", в РФ-браузере "1 000"
+
+// ХОРОШО — фиксируйте локаль и переносите вычисление времени в Client + useEffect
+new Intl.NumberFormat("ru-RU").format(1000);
+```
+
+**5. useContext в Server Component.** Контекст из React существует только в клиентском дереве. Если серверу нужен доступ к данным запроса — используйте функции из `next/headers` (`cookies()`, `headers()`) и кастомный helper, не контекст.
+
+**6. Большие props через RSC payload.** Передаёте в Client весь массив из 5000 записей? Они уедут в HTML как сериализованный JSON. Фильтруйте, делайте пагинацию, оставляйте только то, что реально нужно для интерактива.
+
+**7. Доступ к window/document в Server Component.** Серверный код не имеет браузерных API. Если нужно что-то измерить (размер экрана, поддержку фичи) — это Client + `useEffect`, либо feature detection через CSS.
+
+```tsx
+// ПЛОХО — Server Component
+export default function Page() {
+  const isMobile = window.innerWidth < 768; // ReferenceError
+  return isMobile ? <Mobile /> : <Desktop />;
+}
+
+// ХОРОШО — Client + useEffect, либо CSS media-queries
+```
+
+**8. Использование клиентских хуков навигации на сервере.** `useSearchParams`, `useRouter`, `usePathname` — клиентские. На сервере используйте `searchParams` и `params` через props страницы, и `redirect`/`notFound` из `next/navigation`.
+
+## Граничные случаи с провайдерами
+
+Серверный компонент не может использовать context, который определён в клиентских провайдерах (Theme, Toaster, Query, Auth). Workaround: оборачиваете дерево в клиентском провайдере на самом верху (часто в `app/providers.tsx`), а серверные компоненты передаются ему как `children`.
+
+```tsx
+// app/providers.tsx
+"use client";
+export function Providers({ children }) {
+  return (
+    <ThemeProvider>
+      <ToastProvider>{children}</ToastProvider>
+    </ThemeProvider>
+  );
+}
+
+// app/layout.tsx — Server
+import { Providers } from "./providers";
+export default function RootLayout({ children }) {
+  return (
+    <html lang="ru">
+      <body>
+        <Providers>{children}</Providers>
+      </body>
+    </html>
+  );
+}
+```
+
+Так клиентские провайдеры подключены везде, но сами страницы и сегменты остаются серверными — `children` для клиентского провайдера это просто prop, его содержимое спокойно содержит async серверные компоненты.
 
 ## Итого
 
-Правило: всё серверное по умолчанию, клиентское — точечно для интерактива. Это даёт минимальный JS-бандл, быстрый рендер, безопасный доступ к данным. Через 2-3 проекта команда привыкает мыслить такими границами, и code review становится проще.
+Правило: всё серверное по умолчанию, клиентское — точечно для интерактива. Это даёт минимальный JS-бандл, быстрый рендер, безопасный доступ к данным. Дисциплина вокруг четырёх вещей решает большинство проблем: композиция через `children`, обязательные `error.tsx` + Suspense с гранулярными границами, дедупликация запросов через `cache()` и аккуратная сериализация props.
+
+Через 2-3 проекта команда привыкает мыслить такими границами, и code review становится проще: в PR сразу видно, где «use client» поставлен зря, где забыта Suspense-граница, где функцию случайно прокинули как prop.
 
 <Faq>
   <FaqItem q="Что такое React Server Components простыми словами?">
-    Server Component рендерится на сервере, в браузер уходит уже готовый HTML и сериализованное дерево. Никакого JS-бандла для этого компонента в клиенте — он просто не нужен. Импорт серверных модулей (БД, файловая система, секреты) — без проблем, потому что код никогда не дойдёт до браузера. По умолчанию в App Router все компоненты серверные. Чтобы сделать клиентский, в начало файла добавляется "use client". Это директива не для одного компонента, а для всего модуля.
+    Server Component рендерится на сервере, в браузер уходит уже готовый HTML и сериализованное дерево через React Flight Protocol. Никакого JS-бандла для этого компонента в клиенте — он просто не нужен. Импорт серверных модулей (БД, файловая система, секреты) — без проблем, потому что код никогда не дойдёт до браузера. По умолчанию в App Router все компоненты серверные. Чтобы сделать клиентский, в начало файла добавляется "use client". Это директива не для одного компонента, а для всего модуля и всех его импортов вниз по дереву.
   </FaqItem>
-  <FaqItem q="Когда использовать Server Component вместо Client?">
-    Чтение данных, рендер статики, формирование HTML с серверной логикой. Любая страница списка, карточка товара, статья блога, главная — всё это Server Components. Преимущества: меньший JS-бандл (часто 30-50% от Pages Router), быстрее TTI и FCP, безопасный доступ к секретам и БД, удобный async/await прямо в компоненте. Это даёт минимальный JS-бандл, быстрый рендер, безопасный доступ к данным.
+  <FaqItem q="Как обернуть серверный контент в клиентский интерактивный wrapper?">
+    Через паттерн children. Клиентский компонент (например, аккордеон) принимает children как ReactNode и рендерит интерактивный каркас. Серверный JSX в эти children подкладывает вышестоящий серверный компонент. Импортировать серверный компонент напрямую в клиентский нельзя — он попадёт в клиентский бандл и потеряет async-возможности. А через children RSC-сериализация работает корректно: на клиент уходит уже готовое дерево, а каркас управляет состоянием open/close без обращения к серверной логике.
   </FaqItem>
-  <FaqItem q="Когда нужен Client Component?">
-    Любой интерактив: формы с состоянием, кнопки с onClick, drag-and-drop, анимации, использующие refs, react-spring или framer-motion. Хуки useState, useEffect, useReducer работают только в клиентских компонентах. Не пытайтесь сделать всё клиентским «на всякий случай» — это убивает основное преимущество архитектуры. Лучше: серверный layout, серверная страница, и точечно подключаются клиентские островки для интерактива. Так вы получаете быструю первую отрисовку плюс полноценный интерактив там, где он нужен.
+  <FaqItem q="Зачем нужен error.tsx и как он работает?">
+    error.tsx в App Router — это автоматический Error Boundary для соседнего page.tsx и его дочерних сегментов. Файл должен быть с директивой "use client". Получает props error и reset. Reset перерендерит сегмент — удобно для временных сбоев. Для корневых ошибок layout есть global-error.tsx, он должен возвращать собственные html и body. Сочетается с loading.tsx и Suspense: если внутри Suspense что-то падает, ошибка всплывает до ближайшего Error Boundary, и пользователь видит UI ошибки вместо вечного скелетона.
   </FaqItem>
-  <FaqItem q="Как комбинировать Server и Client Components?">
-    Базовый паттерн: родительский Server Component делает запросы и передаёт данные через props в клиентский компонент. Клиентский компонент уже может работать со state, формами, обработчиками. Обратное (клиентский родитель, серверный ребёнок) — невозможно напрямую. Можно через children: клиентский компонент принимает `{ children }`, а в него прокидывают серверный JSX из вышестоящего серверного компонента. Это позволяет иметь интерактивный layout с серверным контентом.
+  <FaqItem q="Что делает cache() из React и чем отличается от unstable_cache?">
+    cache() — это per-request мемоизация: одинаковые вызовы внутри одного серверного рендера идут в БД один раз. Идеально для дедупликации, когда layout и страница оба читают пользователя или продукт. Сбрасывается на каждый новый запрос. unstable_cache из next/cache — кеш между запросами с TTL и тегами, для тяжёлых операций. Fetch с опциями next.revalidate и next.tags — то же самое, но интегрировано в fetch. Правило: внутри запроса дедуплицируйте через cache(), а кросс-запросное кеширование делайте через unstable_cache или fetch с тегами и revalidateTag.
   </FaqItem>
-  <FaqItem q="Что можно передавать через props между Server и Client?">
-    Передавая props из серверного в клиентский, помните: они сериализуются через React Flight Protocol. Можно передавать примитивы, массивы, объекты, Date, Map, Set, BigInt. Нельзя — функции (кроме Server Actions с "use server"), классы, React-элементы из неэкспортированных компонентов. Передача больших объектов из БД — окей, но фильтруйте лишнее. Не нужно передавать весь юзер-объект с паролем хешем, выберите нужные поля заранее. Меньше данных в props — меньше байт в RSC payload, быстрее загрузка.
+  <FaqItem q="Какие props можно передавать из Server в Client Component?">
+    Сериализуются: примитивы (string, number, boolean, null, undefined), массивы и обычные объекты, Date, Map, Set, BigInt, TypedArray, Promise, JSX. Не сериализуются: функции (кроме Server Actions с "use server"), классы и экземпляры классов, символы, React-элементы из неэкспортированных компонентов. Большие props фильтруйте: не передавайте весь объект из БД с хешем пароля и служебными полями. Каждый байт props уезжает в RSC payload и в HTML — это прямо влияет на размер страницы и скорость загрузки.
   </FaqItem>
-  <FaqItem q="Как использовать Server Actions для форм без API?">
-    Server Actions — серверные функции, которые можно вызывать из клиентских форм. Удобно для CRUD-операций без отдельных API-роутов. Функция помечается "use server" и вызывается напрямую из формы. Валидация на сервере, всегда. Не доверяйте FormData от клиента: проверяйте через Zod, проверяйте права, проверяйте rate limit. Server Actions автоматически создают POST-эндпоинт. Для GET-операций (чтения) используйте Server Components с прямым обращением к БД.
+  <FaqItem q="Какие самые частые ошибки при работе с RSC?">
+    Передача функции как prop в Client Component — нельзя, кроме Server Actions. Использование useState в файле без "use client" — упадёт сборка. Импорт серверных модулей в клиентских — защищайтесь пакетом server-only. Hydration mismatch от Date.now, Math.random, Intl без локали — фиксируйте локаль и выносите рандом в useEffect. useContext в Server Component не работает — используйте функции из next/headers. Большие props через RSC payload — фильтруйте данные. Доступ к window и document на сервере — это Client плюс useEffect или CSS feature detection.
+  </FaqItem>
+  <FaqItem q="Как правильно использовать Suspense с серверными компонентами?">
+    Лучше гранулярные Suspense-границы, чем одна на всю страницу. Оборачивайте Suspense вокруг конкретных медленных блоков — быстрая часть страницы стримится сразу, медленная подгружается позже без задержки остального. Например, заголовок и заказы видны за 200мс, а рекомендации, которые ходят во внешний API на 2 секунды, догоняют сами. loading.tsx даёт базовую границу на весь сегмент, но для нормального UX нужны точечные Suspense внутри страницы. Сочетайте с error.tsx, чтобы падение одного блока не убивало остальные.
   </FaqItem>
 </Faq>
 

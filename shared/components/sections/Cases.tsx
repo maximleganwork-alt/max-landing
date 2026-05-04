@@ -73,6 +73,11 @@ function CaseCard({ item, variant }: CaseCardProps) {
   const isHorizontalWide = variant === "horizontal-wide";
   const isHorizontal = variant === "horizontal" || isHorizontalWide;
   const showSolution = isFeatured || isHorizontalWide;
+  const imageSizes = isFeatured
+    ? "(min-width: 1200px) 900px, (min-width: 640px) 75vw, 100vw"
+    : isHorizontalWide
+      ? "(min-width: 1200px) 650px, (min-width: 1024px) 50vw, 100vw"
+      : "(min-width: 1200px) 900px, (min-width: 1024px) 70vw, (min-width: 640px) 80vw, 100vw";
 
   return (
     <Link
@@ -91,7 +96,13 @@ function CaseCard({ item, variant }: CaseCardProps) {
           isHorizontal && "h-44 lg:h-auto lg:w-2/5 lg:border-b-0 lg:border-r",
         )}
       >
-        <CaseVisual kind={item.visual} className="absolute inset-0 h-full" />
+        <CaseVisual
+          image={item.image}
+          kind={item.visual}
+          sizes={imageSizes}
+          priority={isFeatured || item.slug === "max-support-finhelp"}
+          className="absolute inset-0 h-full"
+        />
       </div>
 
       <div
