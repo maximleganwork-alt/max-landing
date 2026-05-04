@@ -1,0 +1,121 @@
+---
+title: "TypeScript в продакшене: настройка строгости"
+description: "Как настроить TypeScript для рабочего проекта — флаги strict, noUncheckedIndexedAccess, exactOptionalPropertyTypes и плавный переход к строгости."
+date: "2026-03-18"
+tags: ["сайт", "разработка", "стек"]
+---
+
+`"strict": true` — это базовый минимум, а не максимум. На реальных проектах мы включаем десяток дополнительных флагов, которые ловят классы багов на этапе компиляции. Расскажу, что включаем и почему.
+
+## strict: что входит и что не входит
+
+`strict: true` включает 8 флагов: `noImplicitAny`, `strictNullChecks`, `strictFunctionTypes`, `strictBindCallApply`, `strictPropertyInitialization`, `noImplicitThis`, `useUnknownInCatchVariables`, `alwaysStrict`. Это база.
+
+Но есть ещё несколько важных флагов, которые в strict не входят. И именно они ловят самые неприятные баги.
+
+## noUncheckedIndexedAccess
+
+Без этого флага `array[i]` имеет тип `T`, даже если `i` за пределами массива. С флагом — тип становится `T | undefined`, и компилятор заставляет проверить.
+
+```ts
+const items = ["a", "b", "c"];
+const item = items[5]; // без флага: string. С флагом: string | undefined
+```
+
+Это ловит реальные runtime-баги. На крупных проектах включение флага вскрывает 50-200 мест с потенциальными ошибками. Включайте сразу.
+
+## exactOptionalPropertyTypes
+
+Без флага `{ name?: string }` принимает `{ name: undefined }`. С флагом — нет, нужно либо не указывать поле, либо указать `string`.
+
+```ts
+type User = { name?: string };
+const u: User = { name: undefined }; // флаг отлавливает
+```
+
+Это спасает от багов с тонкой разницей между «поле отсутствует» и «поле есть, но значение undefined». Особенно важно при работе с базой и API.
+
+## noImplicitOverride
+
+Когда вы переопределяете метод базового класса, TS не требует `override`. С флагом — требует. Это спасает от ситуации, когда вы переопределили метод, потом в базе его переименовали, а ваш переопределённый метод стал «новым», и базовый поломался.
+
+<InlineCTA>Настроим TypeScript-проект под максимальную строгость</InlineCTA>
+
+В функциональных проектах без классов — флаг бесполезен. В проектах с инхеритансом (NestJS, классы для модельных слоёв) — обязателен.
+
+## noFallthroughCasesInSwitch
+
+Любой `case` в `switch` без `break` или `return` становится ошибкой. Это ловит самый неприятный класс багов, когда забыли break и `case` проваливается в следующий.
+
+## Параметры функций и any
+
+`noImplicitAny` — часть strict. Но иногда команда пишет явные `: any` — флагом не поймаешь. Добавьте ESLint-правила `@typescript-eslint/no-explicit-any`. Не запретит совсем (есть редкие места, где `any` оправдан), но требует явного отключения через комментарий.
+
+`unknown` лучше `any` в 99% случаев. Если приходят неизвестные данные — `unknown` плюс Zod-валидация в точке входа.
+
+## Миграция legacy-проекта
+
+Если у вас старый проект без strict — не включайте всё разом. Стратегия:
+
+1. Включить `strict: true`, посмотреть количество ошибок.
+2. Если их сотни — включать по одному флагу из strict (`strictNullChecks` обычно самый болезненный).
+3. Использовать `// @ts-expect-error` с комментарием на временные обходы. Так вы видите все долги в одном grep.
+4. Постепенно чистить `@ts-expect-error`, начиная с наиболее критичных модулей.
+
+На проекте 50 000 строк это занимает 2-4 недели чистого времени.
+
+## Конфиг tsconfig.json
+
+Базовый вариант для нового проекта:
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "forceConsistentCasingInFileNames": true,
+    "verbatimModuleSyntax": true
+  }
+}
+```
+
+`verbatimModuleSyntax: true` форсит явное `import type` для типов. Это убирает класс багов с циклическими зависимостями и ускоряет билд.
+
+## Проверка в CI
+
+`tsc --noEmit` — обязательный шаг в CI. Локально разработчик может игнорировать ошибки, но в pull request их видно сразу.
+
+В Next.js вызывается через `next lint` и `tsc --noEmit`. В монорепо удобно через Turbo: `turbo run type-check`.
+
+## Итого
+
+TypeScript «на всю катушку» — это семь-восемь флагов сверх strict, плюс правильный ESLint, плюс CI. Включение даёт реальное снижение runtime-багов на 30-50% на сложных проектах. Затраты — пара недель на миграцию legacy-кода. Окупается с первого пойманного бага в проде.
+
+<Faq>
+  <FaqItem q="Что входит в strict mode TypeScript и достаточно ли его?">
+    strict: true включает 8 флагов: noImplicitAny, strictNullChecks, strictFunctionTypes, strictBindCallApply, strictPropertyInitialization, noImplicitThis, useUnknownInCatchVariables, alwaysStrict. Это база, а не максимум. Есть несколько важных флагов, которые в strict не входят: noUncheckedIndexedAccess, exactOptionalPropertyTypes, noImplicitOverride, noFallthroughCasesInSwitch, noImplicitReturns. Именно они ловят самые неприятные баги в реальных проектах.
+  </FaqItem>
+  <FaqItem q="Зачем включать noUncheckedIndexedAccess?">
+    Без этого флага array[i] имеет тип T, даже если i за пределами массива. С флагом — тип становится T | undefined, и компилятор заставляет проверить. Это ловит реальные runtime-баги. На крупных проектах включение флага вскрывает 50-200 мест с потенциальными ошибками. Включайте сразу для нового проекта. Для legacy постепенно через @ts-expect-error в проблемных местах. Один из самых мощных флагов для предотвращения undefined-ошибок в проде.
+  </FaqItem>
+  <FaqItem q="Что даёт exactOptionalPropertyTypes?">
+    Без флага `{ name?: string }` принимает `{ name: undefined }`. С флагом — нет, нужно либо не указывать поле, либо указать string. Это спасает от багов с тонкой разницей между «поле отсутствует» и «поле есть, но значение undefined». Особенно важно при работе с базой и API, где undefined и отсутствие поля имеют разный смысл (например, в JSON-сериализации). Без этого флага легко получить неожиданное поведение при сравнении или сериализации объектов.
+  </FaqItem>
+  <FaqItem q="Как мигрировать legacy-проект на строгий TypeScript?">
+    Стратегия. Включить strict: true, посмотреть количество ошибок. Если их сотни — включать по одному флагу из strict (strictNullChecks обычно самый болезненный). Использовать // @ts-expect-error с комментарием на временные обходы. Так вы видите все долги в одном grep. Постепенно чистить @ts-expect-error, начиная с наиболее критичных модулей. На проекте 50 000 строк это занимает 2-4 недели чистого времени. Не пытайтесь сделать всё разом — будет конфликтов в Git и blocked PRs.
+  </FaqItem>
+  <FaqItem q="Какой tsconfig.json использовать для нового проекта?">
+    Базовый набор флагов для нового проекта. strict: true. noUncheckedIndexedAccess: true. exactOptionalPropertyTypes: true. noImplicitOverride: true. noFallthroughCasesInSwitch: true. noImplicitReturns: true. forceConsistentCasingInFileNames: true. verbatimModuleSyntax: true. verbatimModuleSyntax форсит явное import type для типов — убирает класс багов с циклическими зависимостями и ускоряет билд. Это конфигурация, которую мы используем на всех новых проектах с первого дня.
+  </FaqItem>
+  <FaqItem q="Как настроить TypeScript-проверку в CI?">
+    tsc --noEmit — обязательный шаг в CI. Локально разработчик может игнорировать ошибки, но в pull request их видно сразу. В Next.js вызывается через next lint и tsc --noEmit. В монорепо удобно через Turbo: turbo run type-check. Также добавьте ESLint-правила @typescript-eslint/no-explicit-any (не запретит совсем, но требует явного отключения через комментарий). unknown лучше any в 99% случаев. Если приходят неизвестные данные — unknown плюс Zod-валидация в точке входа.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой веб-проекта под вашу задачу — от ТЗ до запуска. Бесплатная оценка в течение рабочего дня.
+</EndCTA>

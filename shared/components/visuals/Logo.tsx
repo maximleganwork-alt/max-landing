@@ -10,7 +10,7 @@ interface LogoProps {
 }
 
 /**
- * Монограмма L+S одной непрерывной обводкой + wordmark «Legan Studio» в Roboto.
+ * Монограмма L+S одной непрерывной обводкой + wordmark «Legan Studio» в Manrope.
  * Знак — кастомный SVG-путь (L → хвост L → нижняя кривая S → верхняя кривая S).
  */
 export function Logo({
@@ -19,14 +19,14 @@ export function Logo({
   iconOnly = false,
   textClassName,
 }: LogoProps) {
-  // viewBox 38×32, ширина пропорциональна
-  const width = Math.round((size * 38) / 32);
+  // viewBox поджат под фактические границы пути (с учётом stroke-width=5)
+  const width = Math.round((size * 26) / 28);
   return (
-    <span className={cn("inline-flex items-center gap-1 text-fg", className)}>
+    <span className={cn("inline-flex items-center gap-3 text-fg", className)}>
       <svg
         width={width}
         height={size}
-        viewBox="0 0 38 32"
+        viewBox="2 2 26 28"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
         aria-hidden={iconOnly ? undefined : "true"}
@@ -46,7 +46,7 @@ export function Logo({
       {iconOnly ? null : (
         <span
           className={cn(
-            "font-manrope font-bold text-body-lg leading-none tracking-tight",
+            "font-manrope font-extrabold text-body-lg leading-none tracking-tight",
             textClassName,
           )}
         >

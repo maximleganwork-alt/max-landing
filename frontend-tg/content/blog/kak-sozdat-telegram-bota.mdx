@@ -1,0 +1,428 @@
+---
+title: "Как создать Telegram-бота: пошаговый гайд для бизнеса"
+description: "Разбираем, как собрать Telegram-бота под бизнес-задачу: от регистрации в BotFather до выбора webhook и развёртывания на проде."
+date: "2026-04-28"
+tags: ["Telegram", "гайды", "бизнес", "разработка"]
+---
+
+Telegram-бот для бизнеса — это не «скрипт за вечер», а полноценный продукт со своей архитектурой, базой данных и сценариями. Если задача шире, чем «отвечать на /start», стоит сразу закладывать масштабируемую структуру: иначе через полгода придётся переписывать с нуля. Разберём шаги, которые проходит любая команда, прежде чем бот начинает приносить заявки и деньги.
+
+## Шаг 1. Зафиксировать бизнес-задачу
+
+Перед любым кодом нужен ответ на один вопрос: **что бот должен делать в цифрах**. Принимать 50 заявок в день? Закрывать 30% типовых тикетов поддержки? Продавать подписку и удерживать ретеншн на уровне 60%? Без числовой цели бот превращается в «ну пусть будет», и метрики потом неоткуда взять.
+
+Полезно сразу описать 3–5 ключевых пользовательских сценариев: новая заявка, повторная покупка, отмена, эскалация на оператора, рассылка. Это станет основой ТЗ и поможет оценить сроки и стоимость.
+
+## Шаг 2. Создать бота в BotFather
+
+Регистрация занимает пару минут: открываете чат с *@BotFather*, команда `/newbot`, имя и юзернейм. На выходе — токен Bot API, который и есть «ключ от двери». Дополнительно настраиваются:
+
+- описание (`/setdescription`) и короткое описание (`/setabouttext`);
+- картинка (`/setuserpic`) — лицо бота в чатах и поиске;
+- меню команд (`/setcommands`) — то, что подсказывается при вводе `/`;
+- inline-режим, если планируете встроенный поиск.
+
+Токен — это **секрет**. Никогда не коммитьте его в git и не светите в логах: при утечке злоумышленник получает полный доступ к боту.
+
+## Регистрация в @BotFather: пошагово с примерами
+
+Реальный диалог при создании первого бота выглядит так:
+
+```
+Вы: /newbot
+BotFather: Alright, a new bot. How are we going to call it? Please choose a name for your bot.
+Вы: My Cool Bot
+BotFather: Good. Now let's choose a username for your bot. It must end in 'bot'. Like this, for example: TetrisBot or tetris_bot.
+Вы: my_cool_demo_bot
+BotFather: Done! Congratulations on your new bot. You will find it at t.me/my_cool_demo_bot.
+You can now add a description, about section and profile picture for your bot, see /help for a list of commands.
+By the way, when you've finished creating your cool bot, ping our Bot Support if you want a better username for it.
+
+Use this token to access the HTTP API:
+7891234567:AAEhBP0av5C4BotApiTokenExampleStringDoNotUseInProd
+
+Keep your token secure and store it safely, it can be used by anyone to control your bot.
+```
+
+Этот токен (формат `BOT_ID:35-символьная-строка`) — единственное, что нужно для запуска. Сохраните его в `.env`, не в код.
+
+Полезные команды BotFather и что они возвращают:
+
+- **`/newbot`** — создание бота. Спрашивает имя и юзернейм, возвращает токен.
+- **`/mybots`** — список ваших ботов. Открывает inline-меню, через которое доступны все настройки конкретного бота (Edit Bot, Bot Settings, Payments, API Token, Delete Bot).
+- **`/token`** — выдаёт токен выбранного бота повторно. Полезно, если потеряли.
+- **`/revoke`** — генерирует новый токен и инвалидирует старый. Делается мгновенно при подозрении на утечку.
+- **`/setdescription`** — длинное описание (до 512 символов), показывается на пустом экране чата перед первым сообщением.
+- **`/setabouttext`** — короткий текст «о боте» (до 120 символов), виден в профиле и при пересылке.
+- **`/setuserpic`** — аватарка 640×640, JPG/PNG. Первое, что видит пользователь в поиске.
+- **`/setcommands`** — меню команд. На вход принимается список вида `start - запустить бота` (по строке), отображается при нажатии «/» в чате.
+- **`/setdomain`** — whitelist домена для Mini App. Без этого `initData` для вашего домена не выдаётся.
+- **`/deletebot`** — полное удаление бота. Юзернейм блокируется минимум на 24 часа, токен инвалидируется навсегда.
+
+Пример ответа на `/setcommands`:
+
+```
+Вы: /setcommands
+BotFather: Choose a bot to change the list of commands.
+[выбираете бота из меню]
+BotFather: OK. Send me a list of commands for your bot. Please use this format:
+command1 - Description
+command2 - Another description
+Вы:
+start - Запустить бота
+help - Справка
+order - Сделать заказ
+support - Связаться с оператором
+BotFather: Success! Command list updated. /help
+```
+
+## Шаг 3. Выбрать архитектуру: webhook или long polling
+
+Bot API работает в двух режимах. **Long polling** — бот сам опрашивает Telegram, проще для локальной разработки и не требует HTTPS. **Webhook** — Telegram сам присылает апдейты на ваш URL, экономит ресурсы и масштабируется лучше.
+
+Для прод-системы почти всегда выбирают webhook за домен с валидным SSL. Если ожидается больше 30 запросов в секунду — стоит сразу заложить очередь (Redis, RabbitMQ) между приёмом апдейта и его обработкой, иначе при пике Telegram начнёт ретраить и появятся дубли.
+
+## Сравнение фреймворков для разработки
+
+В 2026 году рабочих фреймворков для Bot API немного, и почти все стабилизировались. Сводная таблица актуальных вариантов:
+
+| Фреймворк | Язык | Async/Sync | Типы | FSM | Сообщество | Документация | Активность 2026 |
+|---|---|---|---|---|---|---|---|
+| aiogram 3.x | Python 3.10+ | Async | Pydantic v2 | Встроена (FSMContext, MemoryStorage/RedisStorage) | Большое (RU/EN) | Полная, RU-перевод | Активная, регулярные релизы |
+| grammY | JS/TS (Node 18+, Deno, Bun) | Async | TS-first, генерики | Через `@grammyjs/conversations` | Среднее, растёт | Лучшая в экосистеме | Активная |
+| python-telegram-bot 21+ | Python 3.9+ | Async (раньше sync) | Аннотации типов | Встроена (ConversationHandler) | Очень большое | Полная, обширные примеры | Активная |
+| telegraf | Node.js | Async | TS-определения | Через `telegraf/scenes` | Большое, но падает | Покрытие среднее | Стабильный, медленные релизы |
+| pyTelegramBotAPI (telebot) | Python | Sync (есть AsyncTeleBot) | Слабые | Внешние плагины | Большое | Среднее | Активная, но архитектура устарела |
+| ferrite / go-telegram | Go 1.21+ | Sync (горутины) | Структуры | Самописная | Малое | Среднее | Развивается |
+
+Для новых проектов на Python почти всегда берут **aiogram 3** — современный async, Pydantic-валидация апдейтов, встроенный FSM, поддержка middleware. На Node — **grammY** за счёт TS-first дизайна и аккуратной композиции middleware. Telegraf жив, но новые фичи Bot API в нём появляются с задержкой.
+
+## Минимальный echo-бот на Python (aiogram 3)
+
+Полный рабочий пример — отвечает «Привет!» на `/start` и эхо-повтором на любой текст:
+
+```python
+import asyncio
+import logging
+import os
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
+from aiogram.types import Message
+
+logging.basicConfig(level=logging.INFO)
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN env var is required")
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+
+@dp.message(CommandStart())
+async def handle_start(message: Message) -> None:
+    await message.answer(f"Привет, {message.from_user.first_name}! Напиши что-нибудь.")
+
+
+@dp.message(F.text)
+async def echo(message: Message) -> None:
+    await message.answer(message.text)
+
+
+async def main() -> None:
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Зависимости — одна строка `aiogram>=3.4` в `requirements.txt`. Запуск: `BOT_TOKEN=... python bot.py`.
+
+## Минимальный echo-бот на Node (grammY)
+
+Тот же echo, но на TypeScript:
+
+```typescript
+import { Bot, Context } from "grammy";
+
+const token = process.env.BOT_TOKEN;
+if (!token) throw new Error("BOT_TOKEN env var is required");
+
+const bot = new Bot<Context>(token);
+
+bot.command("start", async (ctx) => {
+  const name = ctx.from?.first_name ?? "друг";
+  await ctx.reply(`Привет, ${name}! Напиши что-нибудь.`);
+});
+
+bot.on("message:text", async (ctx) => {
+  await ctx.reply(ctx.message.text);
+});
+
+bot.catch((err) => console.error("Bot error:", err));
+
+bot.start({
+  onStart: (info) => console.log(`Bot @${info.username} started`),
+});
+```
+
+Зависимости: `npm i grammy` + `npm i -D typescript @types/node`. Запуск: `BOT_TOKEN=... npx tsx bot.ts`.
+
+## Polling vs Webhook: когда что использовать
+
+| Критерий | Long polling | Webhook |
+|---|---|---|
+| Когда выбирать | Разработка, ngrok, прототипы, маленькие боты до 100 апдейтов/мин | Продакшн, высокая нагрузка, низкая задержка |
+| HTTPS | Не требуется | Обязателен (валидный TLS) |
+| Публичный IP/домен | Не нужен | Нужен (или туннель) |
+| Задержка | 1–3 секунды (зависит от long poll timeout) | менее 300 мс |
+| Расход ресурсов | Постоянное соединение, лишний CPU | Только при апдейте |
+| Масштабирование | Один процесс на токен | Произвольное число реплик за балансером |
+| Дубликаты при сбое | Редко | Часто (если не ответили 200 за 60 с — Telegram повторит) |
+
+Webhook требует **HTTPS** с действительным сертификатом — самоподписанные тоже принимаются, но Let's Encrypt бесплатен и проще. Регистрация через Bot API:
+
+```bash
+curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://bot.example.com/tg/webhook",
+    "secret_token": "long-random-string-here",
+    "allowed_updates": ["message", "callback_query", "pre_checkout_query"],
+    "max_connections": 40,
+    "drop_pending_updates": true
+  }'
+```
+
+Telegram добавит заголовок `X-Telegram-Bot-Api-Secret-Token` в каждый запрос — обязательно проверяйте его на сервере, иначе webhook откроет любой, кто узнает URL.
+
+## Пример webhook на FastAPI/Express
+
+FastAPI с aiogram 3:
+
+```python
+import os
+from fastapi import FastAPI, Header, HTTPException, Request
+from aiogram import Bot, Dispatcher
+from aiogram.types import Update
+
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
+
+bot = Bot(BOT_TOKEN)
+dp = Dispatcher()
+app = FastAPI()
+
+
+@app.post("/tg/webhook")
+async def telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: str = Header(default=""),
+):
+    if x_telegram_bot_api_secret_token != WEBHOOK_SECRET:
+        raise HTTPException(status_code=403, detail="bad secret")
+    payload = await request.json()
+    update = Update.model_validate(payload)
+    await dp.feed_update(bot, update)
+    return {"ok": True}
+```
+
+Express + grammY:
+
+```typescript
+import express from "express";
+import { Bot, webhookCallback } from "grammy";
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+bot.command("start", (ctx) => ctx.reply("Hi"));
+
+const app = express();
+app.use(express.json());
+
+app.post(
+  "/tg/webhook",
+  (req, res, next) => {
+    if (req.header("x-telegram-bot-api-secret-token") !== process.env.WEBHOOK_SECRET) {
+      return res.status(403).send("forbidden");
+    }
+    next();
+  },
+  webhookCallback(bot, "express"),
+);
+
+app.listen(3000, () => console.log("listening"));
+```
+
+Главное правило webhook-эндпоинта — отвечать **200 OK быстрее, чем за 60 секунд**. Тяжёлую работу выносите в очередь, иначе Telegram засыпет ретраями.
+
+## Шаг 4. База данных и состояние диалога
+
+Без БД бот — это калькулятор без памяти. Минимум: таблица пользователей, таблица сессий/состояний (FSM), таблица событий. Дальше — заявки, заказы, подписки, история сообщений.
+
+Состояние диалога удобно держать в Redis или в отдельной таблице состояний — это позволяет разворачивать бота в нескольких репликах за балансировщиком. Для **Mini Apps** добавляется отдельный слой: фронтенд на Next.js или React, backend для верификации `initData` и REST/GraphQL API.
+
+## Архитектура production-бота
+
+Минимальная схема боевой инсталляции:
+
+```
+Telegram Bot API
+      │  HTTPS webhook (POST /tg/webhook, X-Telegram-Bot-Api-Secret-Token)
+      ▼
+nginx (TLS termination, rate-limit, IP allowlist Telegram)
+      │
+      ▼
+bot-service (FastAPI / Express, 2+ реплики за upstream)
+      │
+      ├──► PostgreSQL  — users, leads, orders, fsm_states, audit_log
+      ├──► Redis       — кэш, FSM (быстрый доступ), rate-limit, очередь
+      ├──► RabbitMQ / Redis Streams — фоновая обработка, рассылки, ретраи
+      └──► внешние API — CRM (amoCRM, Bitrix24), ЮKassa, OpenAI/YandexGPT
+```
+
+Зачем каждый узел:
+
+- **nginx** — терминация TLS, защита от мусорных запросов, rate-limit на эндпоинт `/tg/webhook` (Telegram редко шлёт >100 rps на один бот, всё выше — атака).
+- **bot-service** — несколько реплик, чтобы не уронить webhook при выкатке. Stateless: всё состояние в БД и Redis.
+- **PostgreSQL** — единое хранилище бизнес-данных. Раз в сутки `pg_dump` в S3.
+- **Redis** — горячий FSM, кэш профилей, счётчики rate-limit. Перезагрузка не теряет бизнес-данные, потому что они в Postgres.
+- **Очередь** — рассылки на 100k+ пользователей нельзя слать из webhook-обработчика. Выкладываете задачу, отдельный воркер шлёт со скоростью 30 сообщений/сек на бот (лимит Telegram).
+- **Внешние API** — обязательно с таймаутами, ретраями и circuit breaker. Когда CRM лежит, бот должен сохранять заявки в свою БД и досылать позже.
+
+## Шаг 5. Интеграции и оплата
+
+Большинство бизнес-ботов так или иначе связаны с внешними системами:
+
+1. **CRM** — amoCRM, Битрикс24, RetailCRM. Через webhook или REST-API.
+2. **Платежи** — ЮKassa, СБП, Telegram Stars для цифровых товаров.
+3. **Аналитика** — собственная таблица событий + дашборд (Metabase, Superset) или продуктовая аналитика типа Amplitude.
+4. **Уведомления оператору** — отдельный чат или канал для эскалаций.
+
+Каждая интеграция — это потенциальная точка отказа. Закладывайте ретраи, идемпотентность и алертинг: бот, который «пропал» на час из-за упавшей CRM, обнуляет всю воронку.
+
+<InlineCTA>Сделаем такого бота под ключ за 14–21 день</InlineCTA>
+
+## Шаг 6. Деплой и эксплуатация
+
+Минимальный прод-стек: VPS или managed-контейнер, обратный прокси (nginx/Caddy) с HTTPS, systemd или Docker для процесса бота, мониторинг (Sentry для ошибок, Prometheus/Grafana для метрик). Для Mini Apps добавляется CDN и edge-кэш.
+
+Отдельная статья — резервное копирование БД и стратегия отката релизов. Бот, который потерял базу клиентов после неудачного деплоя, теряет и доверие к каналу.
+
+## Хостинг и деплой
+
+Реальные варианты в 2026 году с актуальными ценниками:
+
+- **VPS Selectel / Timeweb / Beget** — 500–1500 ₽/мес за 1 vCPU / 1–2 GB RAM / 20 GB SSD. Рабочий минимум для бота на 5–10k MAU. Полный контроль, нужен sysadmin-навык.
+- **Yandex Cloud Compute** — 1 200–3 000 ₽/мес за похожую конфигурацию. Плюс — managed PostgreSQL и Redis рядом.
+- **Yandex Cloud Functions / Cloud Run** — serverless под webhook. Платите за запросы (≈ 20 коп. за 10k вызовов), холодный старт 200–800 мс. Подходит для редких ботов, не для рассылок.
+- **Railway / Render / Fly.io** — managed-контейнеры, 5–20 $/мес. Удобный CI/CD из git, но трафик из РФ нестабильный.
+- **Bare-metal у себя** — для крупных проектов с компанией клиентов в РФ; экономит, но требует поддержки.
+
+Минимальные требования для среднего бизнес-бота: **1 vCPU, 1 GB RAM, 10 GB SSD, Docker 24+**. Рекомендованный способ деплоя — `docker-compose.yml` с тремя сервисами (bot, postgres, redis) и host-nginx сверху для TLS.
+
+## Хранение токена и секретов
+
+Базовое правило: ни один секрет не лежит в коде и в git.
+
+- **Локально** — файл `.env` с переменными, добавлен в `.gitignore`. Загружается через `python-dotenv` / `dotenv` при старте.
+- **CI/CD** — GitHub Actions Secrets, GitLab CI Variables. Не печатаются в логах сборки.
+- **Прод** — Yandex Lockbox, HashiCorp Vault, AWS Secrets Manager. Контейнер берёт секрет при старте через init-контейнер или sidecar.
+- **Минимально для VPS** — `/etc/bot.env` с правами `600 root:root`, читается через `EnvironmentFile=` в systemd-юните или `env_file:` в compose.
+
+Что делать при утечке токена:
+
+1. Немедленно `/revoke` в @BotFather — старый токен инвалидируется в течение нескольких секунд.
+2. Получить новый токен через `/token`.
+3. Обновить переменную окружения в проде, перезапустить сервис.
+4. Найти источник утечки (git history, логи, скриншот) и убрать.
+5. Если токен лежал в git — переписать историю (`git filter-repo`) и сделать force push, иначе он останется в archive.org и форках.
+
+## Чек-лист перед запуском бота в продакшн
+
+Минимальный набор пунктов, без которых бот в прод не уходит:
+
+- [ ] Токен и все секреты в env-переменных, не в git.
+- [ ] `.env`, `*.key`, `*.pem` в `.gitignore`.
+- [ ] Структурированное логирование (JSON), уровни INFO/ERROR разделены.
+- [ ] PostgreSQL с автоматическим бэкапом раз в сутки в отдельное хранилище.
+- [ ] Redis с persistence (AOF) или признание, что данные в нём временные.
+- [ ] Sentry или аналог для ошибок, алерты в дежурный чат.
+- [ ] Метрики (Prometheus) на rps, latency, error rate, длину очереди.
+- [ ] Webhook на HTTPS с валидным сертификатом и `secret_token`.
+- [ ] Опубликована политика обработки ПДн, согласие пользователя берётся явно.
+- [ ] Подана нотификация в РКН (152-ФЗ), включая трансграничную передачу в Telegram.
+- [ ] Обработка падений внешних API: таймаут, ретрай, circuit breaker.
+- [ ] Идемпотентность критичных операций (заказы, платежи) по `update_id` или внешнему ID.
+- [ ] Health-check эндпоинт и docker healthcheck.
+- [ ] README/runbook: как поднять локально, как выкатить в прод, как откатить, кому звонить ночью.
+- [ ] Тесты основных пользовательских сценариев (минимум — `/start`, основная воронка, оплата).
+
+## Типичные ошибки новичков
+
+- **Хардкод токена в `bot.py`** — рано или поздно код уезжает в публичный репозиторий, и бот угоняют за минуты. Сразу `os.environ["BOT_TOKEN"]`.
+- **Отсутствие FSM** — после `/start` бот «забывает», на каком шаге пользователь. Вместо этого городят глобальные dict в памяти, которые рвутся при рестарте.
+- **Sync-обработчики в async-фреймворке** — `requests.get()` внутри aiogram-хендлера блокирует event loop, и бот замирает на время каждого запроса. Используйте `httpx.AsyncClient` / `aiohttp`.
+- **Webhook без ack 200** — обработчик падает с исключением, Telegram повторяет апдейт каждые несколько секунд, в логах буря. Возвращайте 200 даже при внутренней ошибке (а ошибку — в Sentry).
+- **`parse_mode="Markdown"` без экранирования** — пользователь присылает имя `*Test_user*`, бот ловит 400 Bad Request: can't parse entities. Используйте `MarkdownV2` с экранированием или `HTML`.
+- **Игнорирование rate-limit (429 Too Many Requests)** — глобальный лимит ~30 сообщений/сек, на одного пользователя ~1/сек. При превышении Telegram возвращает 429 с `retry_after`. Без обработки бот получает временный бан.
+- **Один процесс на 100k пользователей** — без очередей и реплик любая массовая рассылка кладёт бота на час. Сразу закладывайте воркеры.
+- **Отсутствие проверки `secret_token` на webhook** — кто угодно может слать поддельные апдейты, если знает URL. Всегда сверяйте заголовок.
+- **Хранение длинных истории в `update.message.text`** — таблица за полгода вырастает в десятки гигабайт. Архивируйте старое в холодное хранилище.
+- **Зависимость от `username`** — пользователь меняет username, бот теряет привязку. Идентификатор всегда `user.id` (число), `username` — необязательное поле.
+
+## Сравнительная таблица сложности проектов
+
+Ориентировочные сроки и бюджеты на разработку «под ключ» в студии (с дизайном, тестами, документацией) на 2026 год:
+
+| Тип бота | Сложность | Срок | Бюджет под ключ |
+|---|---|---|---|
+| FAQ-бот / автоответчик | Низкая | 1–2 недели | 50 000 – 100 000 ₽ |
+| Лидогенерация (квиз + интеграция с CRM) | Низкая–средняя | 2–3 недели | 100 000 – 250 000 ₽ |
+| Запись на услуги (YCLIENTS / DIKIDI / 1C) | Средняя | 3–4 недели | 250 000 – 500 000 ₽ |
+| E-commerce с оплатой и каталогом | Средняя–высокая | 4–8 недель | 400 000 – 1 000 000 ₽ |
+| AI-консультант на RAG (с базой знаний) | Высокая | 6–10 недель | 600 000 – 1 500 000 ₽ |
+| HR-бот / корпоративный портал | Высокая | 8–12 недель | 800 000 – 2 000 000 ₽ |
+| Mini App + бэкенд (личный кабинет) | Очень высокая | 10–16 недель | 1 200 000 – 3 000 000 ₽ |
+
+Важно: разброс цены связан не с количеством экранов, а с глубиной интеграций, требованиями к безопасности (152-ФЗ, ПДн, аудит) и SLA. Бот без интеграций и с шаблонным дизайном делается дешевле; бот, в котором висит выручка компании, требует резервирования, нагрузочного тестирования и круглосуточной поддержки — это другой ценник.
+
+## Итого
+
+Telegram-бот для бизнеса — это связка ТЗ, Bot API, базы данных, интеграций и нормальной эксплуатации. Регистрация в BotFather занимает 5 минут, а вот построение прод-системы со всеми сценариями — обычно от 2 до 6 недель в зависимости от сложности. Главный риск — экономия на архитектуре в самом начале: переписывать дороже, чем сразу заложить webhook, очереди и нормальную БД.
+
+<Faq>
+  <FaqItem q="Как создать Telegram-бота с нуля для бизнеса?">
+    Маршрут такой: 1) зафиксировать бизнес-задачу в цифрах (сколько заявок в день, какой ретеншн, какая конверсия); 2) зарегистрировать бота в BotFather командой /newbot и получить токен; 3) выбрать режим работы — webhook для прода, long polling для разработки; 4) поднять базу данных и хранилище состояний (PostgreSQL + Redis); 5) подключить интеграции с CRM, оплатой, аналитикой; 6) развернуть на VPS с HTTPS, мониторингом и алертами. Срок — 2–6 недель в зависимости от сложности.
+  </FaqItem>
+  <FaqItem q="Что такое BotFather и как через него создать бота?">
+    BotFather (@BotFather в Telegram) — официальный бот для регистрации других ботов. Регистрация занимает пару минут: команда /newbot, имя и юзернейм — на выходе токен Bot API. Этим же ботом настраиваются описание (/setdescription), картинка (/setuserpic), меню команд (/setcommands), inline-режим. Токен — это секрет уровня пароля; никогда не коммитьте его в git и не светите в логах, иначе бот компрометируется.
+  </FaqItem>
+  <FaqItem q="Какие команды BotFather нужны при создании бота?">
+    Базовый набор: /newbot создаёт бота и выдаёт токен; /mybots открывает меню с настройками всех ваших ботов; /token выдаёт токен повторно; /revoke немедленно инвалидирует старый токен и выдаёт новый при подозрении на утечку; /setdescription и /setabouttext задают длинное и короткое описание; /setuserpic меняет аватар; /setcommands задаёт меню команд (формат command - description, по строке); /setdomain добавляет домен в whitelist для Mini Apps; /deletebot удаляет бота навсегда. Для большинства проектов хватит /newbot, /setcommands, /setdescription, /setuserpic и /setdomain если есть Mini App.
+  </FaqItem>
+  <FaqItem q="Чем webhook отличается от long polling в Telegram Bot API?">
+    Long polling — бот сам периодически опрашивает Telegram на новые сообщения; проще для локальной разработки, не требует HTTPS-адреса. Webhook — Telegram сам присылает апдейты на указанный URL; экономит ресурсы и лучше масштабируется. В продакшене почти всегда выбирают webhook на домене с валидным SSL. При ожидаемой нагрузке выше 30 запросов в секунду стоит сразу заложить очередь (Redis, RabbitMQ) между приёмом апдейта и обработкой — иначе при пике Telegram начнёт ретраить и появятся дубли.
+  </FaqItem>
+  <FaqItem q="Как правильно настроить webhook для Telegram-бота?">
+    Нужен публичный домен с валидным TLS-сертификатом (Let's Encrypt бесплатно подходит). Регистрация — POST на `api.telegram.org/botTOKEN/setWebhook` с параметрами url, secret_token (длинная случайная строка), allowed_updates (список нужных типов апдейтов), max_connections (40 по умолчанию). Telegram добавляет заголовок X-Telegram-Bot-Api-Secret-Token к каждому запросу — обязательно проверяйте его на сервере. Эндпоинт должен возвращать 200 OK быстрее чем за 60 секунд, иначе апдейт повторится. Тяжёлые операции выносите в фоновую очередь.
+  </FaqItem>
+  <FaqItem q="Какой фреймворк выбрать для разработки Telegram-бота в 2026 году?">
+    Для Python — aiogram 3.x: async, валидация апдейтов через Pydantic v2, встроенный FSM с RedisStorage, активные релизы. Для Node.js / TypeScript — grammY: TS-first дизайн, аккуратные middleware, лучшая в экосистеме документация. Альтернативы: python-telegram-bot 21+ (зрелый, большое сообщество), telegraf (стабильный, но с задержкой по фичам Bot API), pyTelegramBotAPI / telebot (sync, подходит для простых ботов и обучения). На Go — ferrite или go-telegram-bot-api, но экосистема меньше. Главный критерий — наличие FSM из коробки и активная поддержка свежих фич Bot API.
+  </FaqItem>
+  <FaqItem q="Какая база данных нужна Telegram-боту?">
+    Минимум — таблица пользователей, таблица сессий или состояний FSM, таблица событий. Дальше — заявки, заказы, подписки, история сообщений. Рабочая комбинация: PostgreSQL для бизнес-данных, Redis для FSM-состояний и кэшей. Хранение состояний в Redis позволяет разворачивать бота в нескольких репликах за балансировщиком. Для Mini Apps добавляется отдельный слой — фронтенд на Next.js или React, backend для верификации initData и REST/GraphQL API.
+  </FaqItem>
+  <FaqItem q="Сколько времени занимает разработка Telegram-бота?">
+    Простой бот для приёма заявок — 1–2 недели. Бот среднего уровня с воронкой, оплатой и базовой CRM-интеграцией — 2–6 недель. Сложный бот или Mini App с каталогом, личным кабинетом и мульти-интеграциями — 6–12 недель. Платформа уровня ERP — от 3 месяцев. Регистрация в BotFather занимает 5 минут, но это не показатель скорости разработки — основная работа в архитектуре, БД и интеграциях.
+  </FaqItem>
+  <FaqItem q="Какие интеграции обычно нужны Telegram-боту для бизнеса?">
+    Базовый набор — CRM (amoCRM, Битрикс24, RetailCRM через webhook или REST API), платежи (ЮKassa, СБП, Telegram Stars для цифровых товаров), аналитика (своя таблица событий + дашборд в Metabase или Superset, либо Amplitude), уведомления оператору (отдельный чат или канал для эскалаций). Каждая интеграция — потенциальная точка отказа: закладывайте ретраи, идемпотентность и алертинг. Бот, пропавший на час из-за упавшей CRM, обнуляет всю воронку.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка проекта в течение рабочего дня.
+</EndCTA>

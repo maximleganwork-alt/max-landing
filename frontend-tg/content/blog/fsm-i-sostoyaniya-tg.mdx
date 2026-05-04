@@ -1,0 +1,580 @@
+---
+title: "FSM и состояния пользователя в Telegram-боте"
+description: "Что такое FSM в Telegram-ботах, зачем хранить состояния и какие подходы выбрать. Aiogram, grammY, Redis, БД. Практические схемы и подводные камни."
+date: "2026-04-03"
+tags: ["Telegram", "архитектура", "разработка"]
+---
+
+Любой бот сложнее «эхо-чата» сталкивается с задачей: помнить, на каком шаге диалога находится пользователь. Это и есть FSM — конечный автомат, в котором каждое сообщение интерпретируется относительно текущего состояния. Разберём, как его правильно строить, какие хранилища выбрать, как избежать классических ловушек и что делать, когда у вас не один процесс, а кластер из десяти реплик.
+
+Эта статья — не теоретический трактат по теории автоматов, а практический гайд для тех, кто уже пишет ботов и регулярно ловит баг «пользователь нажал кнопку, но бот его не понял». Будут примеры на aiogram 3, grammY, Telegraf и python-telegram-bot, схемы хранилищ и список антипаттернов, на которые мы натыкались в реальных проектах.
+
+## Зачем нужен FSM
+
+Telegram Bot API не сохраняет контекст разговора. Каждое сообщение прилетает в обработчик как отдельный `Update` с пользователем и текстом — без привязки к предыдущему сообщению, без cookie, без сессии. Если бот спросил «введите имя», а потом «введите телефон», ему негде хранить, что следующее сообщение от этого пользователя — это телефон, а не команда `/start` и не сообщение в общий чат поддержки.
+
+Бот без FSM пытается решать задачу «угадайки»: разбирает каждое сообщение в одиночку, без контекста. Через 2–3 сценария код превращается в гирлянду условий вида «если последнее сообщение бота было таким-то, то это, наверное, ответ на него». Поддержка такой логики — отдельный круг ада, и любая правка требует прочитать весь файл.
+
+FSM выносит эту логику в явный слой. У каждого пользователя есть текущее состояние (`waiting_name`, `waiting_phone`, `confirming_order`), и обработчик подписывается не только на тип сообщения, но и на состояние. Логика становится локальной: чтобы понять, что происходит на шаге «ввод телефона», достаточно прочитать один обработчик, а не весь модуль.
+
+Типовые сценарии, где FSM спасает жизнь:
+
+- Регистрация пользователя в 5 шагов: имя, телефон, email, роль, подтверждение.
+- Оформление заказа: выбор товара, количество, адрес, способ оплаты, чек.
+- Опросы и квизы с ветвлением.
+- Заявки в техподдержку с уточняющими вопросами.
+- Админ-панели с многошаговыми операциями (создать акцию, добавить товар).
+
+## Теория: состояния, переходы, события
+
+Конечный автомат формально описывается пятёркой `(S, s₀, Σ, δ, F)`:
+
+- `S` — множество состояний.
+- `s₀` — начальное состояние.
+- `Σ` — алфавит входных событий.
+- `δ` — функция переходов `S × Σ → S`.
+- `F` — множество финальных состояний.
+
+Для Telegram-бота это переводится так. `S` — список именованных шагов воронки. Начальное состояние обычно «нет состояния» (пользователь не в воронке). `Σ` — события: текстовое сообщение, нажатие на inline-кнопку, отправка контакта, отправка локации, команда `/cancel`. `δ` — таблица «что делать в состоянии X при событии Y». `F` — конечные состояния (заказ оформлен, форма отправлена), после которых FSM сбрасывается.
+
+Простейшая воронка регистрации:
+
+```
+            /start
+              |
+              v
+      ┌─────────────┐    text     ┌──────────────┐
+─────>│ waiting_name│ ──────────> │ waiting_phone│
+      └─────────────┘             └──────────────┘
+              ^                          |
+              |                          | contact
+              | /cancel                  v
+              |                   ┌──────────────┐
+              └────────────────── │  confirming  │
+                       /cancel    └──────────────┘
+                                         | yes
+                                         v
+                                      [DONE]
+```
+
+Таблица переходов:
+
+| Состояние        | Событие             | Новое состояние   | Побочный эффект           |
+|------------------|---------------------|-------------------|---------------------------|
+| `none`           | `/start`            | `waiting_name`    | спросить имя              |
+| `waiting_name`   | text                | `waiting_phone`   | сохранить имя, спросить телефон |
+| `waiting_phone`  | contact             | `confirming`      | сохранить телефон, показать карточку |
+| `waiting_phone`  | text                | `waiting_phone`   | «нажмите кнопку Контакт»  |
+| `confirming`     | callback `yes`      | `none`            | создать запись, поблагодарить |
+| `confirming`     | callback `edit`     | `waiting_name`    | сбросить data, спросить заново |
+| любое            | `/cancel`           | `none`            | сбросить state            |
+
+Эта таблица — каркас, который вы переносите в код. Если её можно нарисовать на одной странице, FSM хороший. Если на странице не помещается — пора декомпозировать.
+
+## FSM в aiogram 3
+
+Aiogram 3 — самый идиоматичный фреймворк для FSM на Python. Состояния описываются через `StatesGroup`, переход выполняется `state.set_state(...)`, временные данные кладутся в `state.update_data(...)`. Подключение хранилища — один параметр в `Dispatcher`.
+
+```python
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from redis.asyncio import Redis
+
+router = Router()
+
+
+class Registration(StatesGroup):
+    waiting_name = State()
+    waiting_phone = State()
+    confirming = State()
+
+
+@router.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(Registration.waiting_name)
+    await message.answer("Здравствуйте! Как вас зовут?")
+
+
+@router.message(Command("cancel"), StateFilter("*"))
+async def cmd_cancel(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Отменено.", reply_markup=ReplyKeyboardRemove())
+
+
+@router.message(Registration.waiting_name, F.text)
+async def step_name(message: Message, state: FSMContext) -> None:
+    name = message.text.strip()
+    if len(name) < 2:
+        await message.answer("Имя слишком короткое, попробуйте ещё раз.")
+        return
+    await state.update_data(name=name)
+    await state.set_state(Registration.waiting_phone)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Отправить контакт", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await message.answer("Спасибо. Теперь поделитесь телефоном.", reply_markup=kb)
+
+
+@router.message(Registration.waiting_phone, F.contact)
+async def step_phone(message: Message, state: FSMContext) -> None:
+    await state.update_data(phone=message.contact.phone_number)
+    data = await state.get_data()
+    await state.set_state(Registration.confirming)
+    await message.answer(
+        f"Проверьте: {data['name']}, {data['phone']}.\nВсё верно? (да/нет)",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+@router.message(Registration.confirming, F.text.lower() == "да")
+async def step_confirm(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    # save_user(data) — сюда уходит запись в БД
+    await state.clear()
+    await message.answer("Готово, вы зарегистрированы.")
+
+
+async def main() -> None:
+    redis = Redis.from_url("redis://localhost:6379/0")
+    storage = RedisStorage(redis=redis, state_ttl=3600, data_ttl=3600)
+    dp = Dispatcher(storage=storage)
+    dp.include_router(router)
+    bot = Bot(token="TOKEN")
+    await dp.start_polling(bot)
+```
+
+Важные мелочи. `state.clear()` стирает и состояние, и data — используйте в начале и в конце воронки. `StateFilter("*")` ловит сообщение в любом состоянии, нужен для глобальных команд. `state_ttl` и `data_ttl` в `RedisStorage` ставят TTL на ключи автоматически.
+
+## FSM в grammY (conversations plugin)
+
+В grammY для FSM есть два пути. Базовый — middleware `session()` плюс ручные проверки `ctx.session.step`. Более удобный — плагин `@grammyjs/conversations`, который превращает воронку в линейный async-код. Под капотом он сохраняет позицию в коде через replay, но снаружи это выглядит как обычная функция.
+
+```ts
+import { Bot, session, Context } from "grammy";
+import {
+  conversations,
+  createConversation,
+  type Conversation,
+  type ConversationFlavor,
+} from "@grammyjs/conversations";
+import { RedisAdapter } from "@grammyjs/storage-redis";
+import IORedis from "ioredis";
+
+type MyContext = Context & ConversationFlavor;
+type MyConversation = Conversation<MyContext>;
+
+const redis = new IORedis("redis://localhost:6379");
+const bot = new Bot<MyContext>(process.env.BOT_TOKEN!);
+
+bot.use(session({
+  initial: () => ({}),
+  storage: new RedisAdapter({ instance: redis, ttl: 3600 }),
+}));
+bot.use(conversations());
+
+async function registration(conversation: MyConversation, ctx: MyContext) {
+  await ctx.reply("Как вас зовут?");
+  const nameCtx = await conversation.waitFor("message:text");
+  const name = nameCtx.message.text.trim();
+
+  if (name.length < 2) {
+    await ctx.reply("Слишком короткое имя, начнём заново.");
+    return;
+  }
+
+  await ctx.reply("Поделитесь телефоном кнопкой ниже.", {
+    reply_markup: {
+      keyboard: [[{ text: "Отправить контакт", request_contact: true }]],
+      one_time_keyboard: true,
+      resize_keyboard: true,
+    },
+  });
+  const phoneCtx = await conversation.waitFor("message:contact");
+  const phone = phoneCtx.message.contact.phone_number;
+
+  await ctx.reply(`Проверьте: ${name}, ${phone}. Подтвердить? (да/нет)`);
+  const confirmCtx = await conversation.waitFor("message:text");
+
+  if (confirmCtx.message.text.toLowerCase() === "да") {
+    // await saveUser({ name, phone });
+    await ctx.reply("Готово, зарегистрированы.");
+  } else {
+    await ctx.reply("Отменено.");
+  }
+}
+
+bot.use(createConversation(registration));
+
+bot.command("start", async (ctx) => {
+  await ctx.conversation.enter("registration");
+});
+
+bot.command("cancel", async (ctx) => {
+  await ctx.conversation.exit("registration");
+  await ctx.reply("Отменено.");
+});
+
+bot.start();
+```
+
+Подводный камень conversations: внутри функции нельзя делать сетевые запросы напрямую — нужно оборачивать через `conversation.external(...)`, иначе при replay они выполнятся повторно. То же касается `Date.now()` и `Math.random()`.
+
+## FSM в Telegraf (scenes / wizard scenes)
+
+Telegraf использует понятие «сцен». Базовая `BaseScene` — ручной граф, `WizardScene` — автоматический пошаговый автомат, где каждый шаг это функция в массиве.
+
+```ts
+import { Telegraf, Scenes, session, Markup } from "telegraf";
+
+interface WizState {
+  name?: string;
+  phone?: string;
+}
+
+const wizard = new Scenes.WizardScene<Scenes.WizardContext>(
+  "registration",
+  async (ctx) => {
+    await ctx.reply("Как вас зовут?");
+    return ctx.wizard.next();
+  },
+  async (ctx) => {
+    if (!("text" in ctx.message!)) {
+      await ctx.reply("Введите имя текстом.");
+      return;
+    }
+    (ctx.wizard.state as WizState).name = ctx.message.text;
+    await ctx.reply(
+      "Телефон?",
+      Markup.keyboard([Markup.button.contactRequest("Отправить контакт")])
+        .oneTime()
+        .resize(),
+    );
+    return ctx.wizard.next();
+  },
+  async (ctx) => {
+    const msg = ctx.message;
+    if (!msg || !("contact" in msg)) {
+      await ctx.reply("Нажмите кнопку «Отправить контакт».");
+      return;
+    }
+    (ctx.wizard.state as WizState).phone = msg.contact.phone_number;
+    const { name, phone } = ctx.wizard.state as WizState;
+    await ctx.reply(`Готово: ${name}, ${phone}`, Markup.removeKeyboard());
+    return ctx.scene.leave();
+  },
+);
+
+const stage = new Scenes.Stage<Scenes.WizardContext>([wizard]);
+const bot = new Telegraf<Scenes.WizardContext>(process.env.BOT_TOKEN!);
+bot.use(session());
+bot.use(stage.middleware());
+
+bot.command("start", (ctx) => ctx.scene.enter("registration"));
+bot.command("cancel", async (ctx) => {
+  if (ctx.scene.current) await ctx.scene.leave();
+  await ctx.reply("Отменено.");
+});
+bot.launch();
+```
+
+Wizard-сцены просты, пока шаги линейны. Как только появляется ветвление — переключайтесь на `BaseScene` или вынесите состояние в БД.
+
+## FSM в python-telegram-bot
+
+PTB (`python-telegram-bot`) использует `ConversationHandler` с явными состояниями-константами. Это многословнее aiogram, но зато все переходы видны декларативно в одном месте.
+
+```python
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, ConversationHandler,
+    ContextTypes, filters,
+)
+
+NAME, PHONE, CONFIRM = range(3)
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    await update.message.reply_text("Как вас зовут?")
+    return NAME
+
+
+async def name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["name"] = update.message.text.strip()
+    kb = ReplyKeyboardMarkup(
+        [[KeyboardButton("Отправить контакт", request_contact=True)]],
+        resize_keyboard=True, one_time_keyboard=True,
+    )
+    await update.message.reply_text("Телефон?", reply_markup=kb)
+    return PHONE
+
+
+async def phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["phone"] = update.message.contact.phone_number
+    d = context.user_data
+    await update.message.reply_text(
+        f"Проверьте: {d['name']}, {d['phone']}. Подтвердить? (да/нет)",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return CONFIRM
+
+
+async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text.lower() == "да":
+        await update.message.reply_text("Готово.")
+    else:
+        await update.message.reply_text("Отменено.")
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Отменено.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+
+conv = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, name)],
+        PHONE: [MessageHandler(filters.CONTACT, phone)],
+        CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+    conversation_timeout=3600,
+)
+
+app = ApplicationBuilder().token("TOKEN").build()
+app.add_handler(conv)
+app.run_polling()
+```
+
+`conversation_timeout` автоматически выкидывает зависшие диалоги. `fallbacks` — обработчики, доступные на любом шаге. По умолчанию state хранится in-memory; для продакшена подключите `PicklePersistence` или внешний `BasePersistence`.
+
+<InlineCTA>Поможем спроектировать архитектуру под нагрузку</InlineCTA>
+
+## Хранилища состояний
+
+Где хранить — это половина успеха. Варианты по нарастанию надёжности:
+
+1. **MemoryStorage** (in-process dict). Просто, нулевая латентность. Теряется при рестарте, не работает с несколькими репликами. Подходит для локальной разработки и одноразовых ботов.
+2. **Redis**. Отраслевой стандарт для FSM. Быстро, переживает рестарт, шарится между репликами, нативный TTL. Цена — зависимость от внешнего сервиса и ~1 мс на чтение/запись.
+3. **MongoDB**. Удобно, если уже используется Mongo. Документная структура хорошо ложится на «state + data». Латентность выше Redis, TTL через индексы.
+4. **PostgreSQL/MySQL**. Имеет смысл, если состояние диалога — часть бизнес-данных и должно жить в одной транзакции с прикладной записью. Медленнее, но даёт ACID и аналитику.
+5. **Гибрид**. Redis для горячего FSM, БД для постоянного снимка после завершения воронки.
+
+Сравнение:
+
+| Критерий              | Memory | Redis    | Mongo   | Postgres |
+|-----------------------|--------|----------|---------|----------|
+| Латентность чтения    | 0 мкс  | 0.5–2 мс | 1–5 мс  | 1–10 мс  |
+| Переживает рестарт    | нет    | да       | да      | да       |
+| Шарится между репликами | нет  | да       | да      | да       |
+| TTL из коробки        | нет    | да       | да      | нет      |
+| Транзакции с бизнес-БД | нет   | нет      | нет     | да       |
+| Сложность setup       | нулевая| низкая   | средняя | средняя  |
+
+Для типового бота 90% времени правильный ответ — Redis с TTL 24–72 часа.
+
+## Кастомное хранилище на PostgreSQL
+
+Если по политике инфраструктуры Redis недоступен, или вы хотите хранить state в одной БД с прикладными данными, реализация хранилища поверх Postgres делается за полчаса.
+
+```python
+import json
+from typing import Any, Dict, Optional
+from aiogram.fsm.storage.base import BaseStorage, StorageKey, StateType
+from asyncpg import Pool
+
+
+class PgStorage(BaseStorage):
+    def __init__(self, pool: Pool) -> None:
+        self.pool = pool
+
+    def _key(self, key: StorageKey) -> str:
+        return f"{key.bot_id}:{key.chat_id}:{key.user_id}"
+
+    async def set_state(self, key: StorageKey, state: StateType = None) -> None:
+        s = state.state if hasattr(state, "state") else state
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO fsm (key, state, updated_at) VALUES ($1, $2, now())
+                   ON CONFLICT (key) DO UPDATE SET state = EXCLUDED.state, updated_at = now()""",
+                self._key(key), s,
+            )
+
+    async def get_state(self, key: StorageKey) -> Optional[str]:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval("SELECT state FROM fsm WHERE key = $1", self._key(key))
+
+    async def set_data(self, key: StorageKey, data: Dict[str, Any]) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO fsm (key, data, updated_at) VALUES ($1, $2, now())
+                   ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = now()""",
+                self._key(key), json.dumps(data),
+            )
+
+    async def get_data(self, key: StorageKey) -> Dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchval("SELECT data FROM fsm WHERE key = $1", self._key(key))
+            return json.loads(row) if row else {}
+
+    async def close(self) -> None:
+        await self.pool.close()
+```
+
+Очистка зависших сессий — отдельным воркером раз в час: `DELETE FROM fsm WHERE updated_at < now() - interval '24 hours'`.
+
+## Кластеризация и горизонтальное масштабирование
+
+Если бот живёт в одном процессе — можно обойтись MemoryStorage и спать спокойно. Как только реплик становится больше одной (Kubernetes, Docker Swarm, просто два бэкенда за nginx) — состояние обязано жить во внешнем хранилище.
+
+Сценарий: пользователь нажал кнопку, запрос ушёл в реплику A, та поставила `state = waiting_phone` в свою память. Следующее сообщение уходит в реплику B, у которой состояние пустое. Бот отвечает «не понял команду». Пользователь думает, что бот сломан.
+
+Дополнительные нюансы:
+
+- **Webhooks vs polling**. На polling одновременно может работать только одна реплика (long-polling — один getUpdates на бота). На webhook параллельно работают все реплики, балансировку делает балансировщик. FSM в общем хранилище становится обязательным.
+- **Гонки**. Два сообщения от одного пользователя пришли почти одновременно в разные реплики. Возможен race condition при `get_data` → modify → `set_data`. Решение — атомарные операции (Redis Lua, Postgres `UPDATE ... RETURNING`) или короткий блокирующий `SETNX` на ключе пользователя.
+- **Переключение хранилища**. Не делайте на горячую — проще выкатить новую версию, дать активным сессиям истечь, потом подключить новое хранилище.
+
+## TTL и зависшие сессии
+
+Веб-форма — это разовый акт: открыл, заполнил, отправил. Бот в Telegram — это диалог, который пользователь может бросить и вернуться через неделю. Состояние при этом висит в хранилище и засоряет его. Хуже — пользователь возвращается и пишет «привет», а бот думает, что он на шаге `waiting_phone` и отвечает «введите телефон».
+
+Решение — TTL на ключе FSM. Гайдлайн по длительностям:
+
+- Короткие воронки (заказ, запись, лид) — TTL 30–60 минут.
+- Средние (анкета, опрос) — TTL 2–6 часов.
+- Длинные процессы (оформление договора, верификация) — TTL 24–72 часа с напоминанием в середине.
+- Подписки и аккаунты — TTL не нужен, состояние постоянное.
+
+Если пользователь возвращается после TTL — бот честно говорит «давайте начнём сначала», а не пытается продолжить с обрывками. Хорошая практика — за час до истечения TTL прислать «вы не закончили оформление, продолжить?» с кнопками «да/нет».
+
+<InlineCTA>Запустим бота с FSM, Redis и тестами</InlineCTA>
+
+## Откат назад, отмена и глобальные команды
+
+В любой воронке должны работать минимум три команды независимо от состояния:
+
+- `/cancel` или `/stop` — выйти из воронки, очистить state.
+- `/start` или `/menu` — вернуться в главное меню (тоже сбрасывает state, но дружелюбнее).
+- `/help` — показать подсказку, не ломая state.
+
+В aiogram это `StateFilter("*")`. В grammY conversations — `ctx.conversation.exit("name")` поверх middleware. В PTB — `fallbacks` в `ConversationHandler`. В Telegraf — отдельный `bot.command(...)` до регистрации сцен.
+
+Кнопка «Назад» внутри воронки — отдельная история. Простейший вариант — хранить в data «предыдущее состояние»:
+
+```python
+@router.callback_query(F.data == "back")
+async def go_back(cb: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    prev = data.get("__prev")
+    if prev:
+        await state.set_state(prev)
+        await cb.message.edit_text("Вернулись на предыдущий шаг.")
+    else:
+        await cb.answer("Назад некуда.")
+```
+
+Не пытайтесь хранить полную историю состояний — она быстро превращается в стек, и отладка становится мукой. Достаточно одного шага назад.
+
+## Вложенные сценарии
+
+Соблазн: внутри воронки регистрации запустить вложенную воронку «выбор города», а та внутри — ещё одну «выбор района». Через два месяца сопровождение этого превращается в кошмар.
+
+Правила хорошего тона:
+
+- Не более одного уровня вложенности.
+- Вложенный сценарий должен возвращать результат в data родителя, а не править её через side-effect.
+- Если просится третий уровень — пересмотрите архитектуру: скорее всего, это не вложенность, а отдельная воронка, которую нужно запустить из меню.
+
+В aiogram вложенность реализуется через несколько `StatesGroup` и явный возврат через `state.set_state(Parent.next_step)`. В grammY conversations есть `conversation.run(other)` — но используйте экономно.
+
+## Тестирование FSM
+
+FSM с явными состояниями отлично тестируется. Базовый юнит-тест — подаём событие в обработчик с заданным состоянием, проверяем итоговое состояние и реакцию.
+
+```python
+import pytest
+from aiogram.fsm.storage.memory import MemoryStorage, MemoryStorageRecord
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
+
+
+@pytest.mark.asyncio
+async def test_step_name_sets_phone_state():
+    storage = MemoryStorage()
+    key = StorageKey(bot_id=1, chat_id=42, user_id=42)
+    state = FSMContext(storage=storage, key=key)
+    await state.set_state(Registration.waiting_name)
+
+    fake_msg = make_fake_message(text="Иван", chat_id=42, user_id=42)
+    await step_name(fake_msg, state)
+
+    assert await state.get_state() == Registration.waiting_phone.state
+    data = await state.get_data()
+    assert data["name"] == "Иван"
+```
+
+Интеграционный уровень — поднять `Dispatcher` с `MemoryStorage`, прокидывать через `dp.feed_update(bot, update)` фейковые апдейты и проверять цепочку. В grammY аналог — `bot.handleUpdate(update)`. Покрывайте минимум: успешный путь, отмену, ошибку валидации, тайм-аут, replay одного и того же сообщения.
+
+## Альтернативы FSM
+
+FSM — не единственный способ. Для простых случаев избыточен.
+
+- **Router-only**. Если бот реагирует только на команды и кнопки, без многошаговых форм, FSM не нужен. Достаточно роутеров по callback_data.
+- **One-shot формы через WebApp / Mini App**. Сложную форму отдают в Mini App, бот получает финальные данные одним сообщением. Никакого FSM на стороне бота.
+- **Inline-kb wizard через `edit_message_text`**. Состояние шага закодировано в `callback_data` (`order:step2`). Stateless с точки зрения сервера — состояние живёт в кнопках сообщения. Минус: нельзя ввести произвольный текст.
+- **Внешний оркестратор** (Camunda, Temporal). Для бизнес-процессов, где бот — лишь один из каналов. Излишне для типового бота, оправдано в энтерпрайзе.
+
+Выбор зависит от длины воронки и количества каналов. Для 80% задач — FSM в aiogram/grammY. Для одношаговых сценариев — router. Для комплексных форм — Mini App.
+
+## Антипаттерны
+
+- **Глобальное состояние**. `current_user_id = None` в модуле — гарантированный баг при первом конкурентном запросе. Состояние всегда привязано к пользователю и хранится в storage.
+- **Shared mutable state**. `context.bot_data["pending"] = {...}` — в PTB `bot_data` шарится между всеми пользователями. Для пользовательских данных — `user_data`, для FSM — `ConversationHandler`.
+- **Толстое state**. Сериализация ORM-объектов в Redis на каждое сообщение — путь к латентности. Храните идентификаторы и шаговые поля, восстанавливайте объект из БД при необходимости.
+- **State без TTL**. Через год Redis забит «брошенными» диалогами на гигабайт. TTL обязателен.
+- **Бизнес-логика внутри handler**. Handler — тонкий слой: разобрал событие, дернул сервис, обновил state. Расчёты, валидации, БД — в отдельных функциях. Иначе невозможно тестировать.
+- **`state` как способ хранить «выбран ли товар»**. State — это шаг воронки, а не флаг. Флаги — в data или в БД.
+- **Перепрыгивание через состояния по `set_state`**. Если из A можно прыгнуть в C минуя B — пересмотрите граф. Возможно, B вообще лишнее, или A→C — отдельный путь, которого нет в схеме.
+- **Игнорирование команды `/start` внутри FSM**. Пользователь жмёт `/start` посреди воронки — бот должен либо честно сбросить state, либо переспросить «у вас незаконченная заявка, продолжить?». Молчать нельзя.
+
+## Итого
+
+FSM — основа любого нетривиального Telegram-бота. Главные принципы: храните состояние в Redis с TTL, группируйте состояния по экранам, разделяйте «где я нахожусь» (state) и «что я ввёл» (data), не доверяйте in-process памяти как только появляется вторая реплика. Aiogram, grammY и PTB дают готовые механизмы; самописный FSM оправдан только если действительно нужен state в той же транзакции, что и бизнес-данные. Глобальные команды (`/cancel`, `/start`) обязаны работать в любом состоянии. Тестируйте хотя бы основные ветки воронки — это страховка от регрессий при рефакторинге. И держите граф состояний на одной странице: если он не помещается, FSM пора декомпозировать.
+
+<Faq>
+  <FaqItem q="Что такое FSM в Telegram-боте простыми словами?">
+    Конечный автомат для хранения состояния пользователя. Telegram Bot API не сохраняет контекст разговора — каждое сообщение это отдельный запрос с пользователем и текстом, без какой-либо привязки к предыдущим. Если бот запросил «введите имя», а потом «введите телефон», ему негде хранить, что следующее сообщение — это телефон, а не команда. FSM решает это явно: каждому пользователю присваивается состояние («waiting_name», «waiting_phone», «waiting_confirmation»), и обработчик смотрит сразу и на текст, и на состояние. Логика становится локальной — чтобы понять что происходит на шаге, достаточно прочитать один обработчик.
+  </FaqItem>
+  <FaqItem q="Где хранить FSM-состояние Telegram-бота?">
+    Четыре варианта по нарастанию надёжности. Память процесса (MemoryStorage) — словарь user_states[user_id] = state, просто, но теряется при рестарте, не работает в нескольких репликах, подходит только для разработки. Redis — отраслевой стандарт, быстро, переживает рестарт, работает с горизонтальным масштабированием, TTL автоматически очищает «брошенные» диалоги. MongoDB — удобно если уже используется. Реляционная БД (PostgreSQL) — медленнее, но проще для аналитики и долгого хранения, имеет смысл если state — часть бизнес-данных. Гибрид — Redis для горячего состояния, БД для холодного снимка после завершения. Для типового бота 90% времени правильный ответ — Redis с TTL 24–72 часа.
+  </FaqItem>
+  <FaqItem q="Почему MemoryStorage нельзя использовать в продакшене?">
+    Две причины. Первая — теряется при рестарте, любой деплой обнуляет все активные диалоги, пользователи остаются с битыми воронками. Вторая — не работает в кластере. Если у вас две реплики бота за балансировщиком (а на webhook так почти всегда), то запрос пользователя может уйти в реплику A, а следующее сообщение в реплику B. У реплики B состояние пустое, бот отвечает «не понял команду». MemoryStorage годен только для локальной разработки и одноразовых ботов на одном процессе. В продакшене — Redis или БД.
+  </FaqItem>
+  <FaqItem q="Как реализовать кнопку «Назад» в FSM-воронке?">
+    Простейший вариант — хранить в data одно предыдущее состояние под ключом __prev. На обработчике callback «back» читаете data, читаете state.get_data().get('__prev'), делаете state.set_state(prev). Не пытайтесь хранить полную историю состояний — она быстро превращается в стек, и отладка становится мукой. Достаточно одного шага назад. Альтернатива — построить навигацию через inline-кнопки, где callback_data кодирует целевой шаг (order:step2), и FSM фактически stateless. Хорошо для простых воронок, плохо если нужен ввод произвольного текста.
+  </FaqItem>
+  <FaqItem q="Какой TTL ставить на FSM-состояние Telegram-бота?">
+    Зависит от длины воронки. Короткие (заказ, запись, лид) — 30–60 минут. Средние (анкета, опрос) — 2–6 часов. Длинные (оформление договора, верификация) — 24–72 часа с напоминанием в середине. Подписки и аккаунты — TTL не нужен, состояние постоянное. Бот в Telegram отличается от веб-формы тем, что пользователь может бросить диалог и вернуться через неделю — состояние при этом висит в хранилище и засоряет его. Если пользователь возвращается после TTL — бот честно говорит «начнём сначала», а не пытается продолжить с обрывками.
+  </FaqItem>
+  <FaqItem q="Как тестировать FSM-логику Telegram-бота?">
+    На юнит-уровне — поднимаете MemoryStorage, создаёте FSMContext с фейковым ключом, ставите нужное состояние, передаёте фейковое сообщение в обработчик, проверяете итоговое состояние и data. На интеграционном — поднимаете Dispatcher с MemoryStorage и через dp.feed_update(bot, update) прокидываете цепочку фейковых апдейтов. В grammY аналог — bot.handleUpdate(update). Минимальный набор кейсов: успешный путь воронки, отмена через /cancel, ошибка валидации на каждом шаге, тайм-аут, повторная отправка одного и того же сообщения. Это спасает от регрессий после рефакторинга воронок.
+  </FaqItem>
+  <FaqItem q="Какие самые частые антипаттерны при работе с FSM?">
+    Глобальное состояние в модуле (current_user_id = None) — баг при первом конкурентном запросе. Shared mutable state в context.bot_data — он шарится между всеми пользователями, для пользовательского state есть user_data. Толстое state с сериализацией ORM-объектов — латентность и память; храните идентификаторы и шаговые поля. State без TTL — через год Redis забит брошенными диалогами. Бизнес-логика внутри handler — невозможно тестировать; handler должен быть тонким. State как флаг (выбран ли товар) — state это шаг воронки, флаги в data или в БД. Игнорирование /start внутри FSM — нужно либо сбросить state, либо переспросить.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка в течение рабочего дня.
+</EndCTA>

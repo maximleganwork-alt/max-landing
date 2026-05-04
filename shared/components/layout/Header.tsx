@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { ArrowRight, Menu, X } from "lucide-react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, m } from "framer-motion";
 import { Logo } from "../visuals/Logo";
 import { Button } from "../ui/Button";
 import { reachGoal } from "../../lib/analytics";
@@ -12,6 +13,8 @@ import type { HeaderContent } from "../../lib/content/header";
 export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [hoveredNav, setHoveredNav] = useState<string | null>(null);
+  const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -22,15 +25,35 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
   }, [menuOpen]);
 
   const handleNav = (e: React.MouseEvent<HTMLAnchorElement>, href: string) => {
-    e.preventDefault();
     setMenuOpen(false);
-    smoothScrollTo(href.replace("#", ""));
+    // Якорь `#section` — гладкий скролл, но только если уже на главной.
+    // С глубоких страниц переходим на `/#section` через Next router.
+    if (href.startsWith("#")) {
+      e.preventDefault();
+      if (pathname === "/") {
+        smoothScrollTo(href.replace("#", ""));
+      } else {
+        router.push(`/${href}`);
+      }
+      return;
+    }
+    // Внутренний путь типа `/blog` — пусть отрабатывает <a href> естественно
+    // (Next добавит client-side навигацию через Link, но здесь у нас обычный
+    // <a>, и того достаточно — переход через router.push сохранит SPA-стиль).
+    if (href.startsWith("/")) {
+      e.preventDefault();
+      router.push(href);
+    }
   };
 
   const handleCta = () => {
     reachGoal("cta_click_header");
     setMenuOpen(false);
-    smoothScrollTo("lead-form");
+    if (pathname === "/") {
+      smoothScrollTo("lead-form");
+    } else {
+      router.push("/#lead-form");
+    }
   };
 
   return (
@@ -77,7 +100,7 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
                   )}
                 >
                   {hoveredNav === item.href ? (
-                    <motion.span
+                    <m.span
                       layoutId="nav-pill"
                       aria-hidden="true"
                       transition={{ type: "spring", stiffness: 380, damping: 32 }}
@@ -121,7 +144,7 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
 
       <AnimatePresence>
         {menuOpen ? (
-          <motion.div
+          <m.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -136,7 +159,7 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
             >
               <ul className="flex flex-col gap-1">
                 {navItems.map((item, i) => (
-                  <motion.li
+                  <m.li
                     key={item.href}
                     initial={{ opacity: 0, x: -8 }}
                     animate={{ opacity: 1, x: 0 }}
@@ -149,7 +172,7 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
                     >
                       {item.label}
                     </a>
-                  </motion.li>
+                  </m.li>
                 ))}
               </ul>
               <div className="mt-auto pt-6 safe-bottom">
@@ -158,7 +181,7 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
                 </Button>
               </div>
             </nav>
-          </motion.div>
+          </m.div>
         ) : null}
       </AnimatePresence>
     </header>

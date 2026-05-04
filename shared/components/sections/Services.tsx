@@ -91,7 +91,7 @@ function AIVisual() {
 
           {/* Заголовок: аватар AI + имя + статус */}
           <circle cx="22" cy="22" r="10" fill="url(#aiBrandGradient)" />
-          <rect x="38" y="16" width="64" height="6" rx="3" fill="var(--fg)" />
+          <rect x="38" y="16" width="64" height="6" rx="3" fill="url(#aiBrandGradient)" />
           <rect
             x="38"
             y="26"

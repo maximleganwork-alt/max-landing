@@ -1,6 +1,6 @@
 "use client";
 
-import { motion, useReducedMotion } from "framer-motion";
+import { m, useReducedMotion } from "framer-motion";
 import { ArrowUpRight, CheckCircle2, TrendingUp, Users } from "lucide-react";
 
 const chartPoints = [40, 55, 48, 70, 62, 88, 95];
@@ -51,7 +51,7 @@ export function FloatingCardsMockup() {
       />
 
       {/* 1. KPI: Конверсия (top-left) */}
-      <motion.div
+      <m.div
         {...enter(0.15)}
         className="absolute left-[2%] top-[3%] z-20 w-[38%] rounded-[var(--radius)] border border-border bg-bg-elevated p-3 shadow-[0_12px_32px_rgba(0,0,0,0.10)]"
         style={{ transform: "rotate(-3deg)" }}
@@ -73,10 +73,10 @@ export function FloatingCardsMockup() {
             />
           ))}
         </div>
-      </motion.div>
+      </m.div>
 
       {/* 2. Notification: новый платёж (top-right) */}
-      <motion.div
+      <m.div
         {...enter(0.25)}
         className="absolute right-[2%] top-[6%] z-20 flex w-[44%] items-center gap-2.5 rounded-[var(--radius)] border border-border bg-bg-elevated p-2.5 shadow-[0_12px_32px_rgba(0,0,0,0.10)]"
         style={{ transform: "rotate(4deg)" }}
@@ -93,10 +93,10 @@ export function FloatingCardsMockup() {
           </span>
         </div>
         <span className="text-[8px] text-fg-subtle">2 мин</span>
-      </motion.div>
+      </m.div>
 
       {/* 3. График выручки (центр, главная) */}
-      <motion.div
+      <m.div
         {...enter(0.35)}
         className="absolute left-1/2 top-[50%] z-30 w-[58%] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-lg)] border border-border bg-bg-elevated p-3 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"
       >
@@ -129,14 +129,14 @@ export function FloatingCardsMockup() {
               <stop offset="100%" stopColor="var(--brand-grad-to)" />
             </linearGradient>
           </defs>
-          <motion.path
+          <m.path
             d={chartArea}
             fill="url(#floatChartArea)"
             initial={reduced ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.7, duration: 0.5 }}
           />
-          <motion.path
+          <m.path
             d={chartPath}
             fill="none"
             stroke="url(#floatChartLine)"
@@ -148,10 +148,10 @@ export function FloatingCardsMockup() {
             transition={{ delay: 0.6, duration: 1.2, ease: "easeOut" }}
           />
         </svg>
-      </motion.div>
+      </m.div>
 
       {/* 4. Лиды (bottom-left) */}
-      <motion.div
+      <m.div
         {...enter(0.45)}
         className="absolute bottom-[3%] left-[3%] z-20 flex w-[40%] items-center gap-2 rounded-[var(--radius)] border border-border bg-bg-elevated p-2.5 shadow-[0_12px_32px_rgba(0,0,0,0.10)]"
         style={{ transform: "rotate(-2deg)" }}
@@ -176,7 +176,7 @@ export function FloatingCardsMockup() {
           </span>
         </div>
         <Users className="h-3.5 w-3.5 text-fg-subtle" aria-hidden="true" />
-      </motion.div>
+      </m.div>
 
     </div>
   );

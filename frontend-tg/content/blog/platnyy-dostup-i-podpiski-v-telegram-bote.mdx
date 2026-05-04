@@ -1,0 +1,632 @@
+---
+title: "Платный доступ и подписки в Telegram-боте"
+description: "Разбираем, как реализовать платный доступ и подписки в Telegram: Stars, рекуррент через ЮKassa, закрытые каналы и контроль продлений."
+date: "2026-02-12"
+tags: ["Telegram", "оплата", "подписки", "разработка"]
+---
+
+Подписочная модель в Telegram-боте — это монетизация контента, доступа к сообществу или сервиса по тарифу «месяц/квартал/год». Реализация выглядит просто только на словах: за фасадом «купил → получил доступ» лежит биллинг, контроль продления, доступ к закрытым каналам и аккуратная работа с возвратами. Ниже — полный разбор: бизнес-модели, платёжные шлюзы (Telegram Payments 2.0, Stars, ЮKassa, CloudPayments), реализация рекуррента, обработка webhook, схема БД, проверка доступа в handler-ах, trial и grace, промокоды и реферальные программы, возвраты, аналитика подписочного бизнеса (MRR, churn, LTV) и юридическая обвязка по 54-ФЗ и 152-ФЗ.
+
+## Бизнес-модели платного доступа
+
+Прежде чем выбирать платёжный шлюз и рисовать ER-диаграмму, надо договориться о бизнес-модели. От неё зависит всё остальное: тарифная сетка, расписание списаний, требования к чекам и обвязка возвратов.
+
+| Модель | Когда подходит | Сложность реализации |
+|---|---|---|
+| Разовый платёж | Курс, отчёт, цифровой товар | Низкая |
+| Подписка месяц/год | SaaS, доступ к контенту, комьюнити | Высокая (рекуррент) |
+| Тиры free/pro/enterprise | B2B-инструменты, многофункциональные продукты | Высокая |
+| Pay-per-use | Запросы к LLM, обработка файлов, API-обёртки | Средняя (биллинг по событиям) |
+| Donate / Pay-what-you-want | Развлекательные боты, opensource | Низкая |
+
+Часто внутри одного продукта живут две модели: бесплатный тир + платная подписка с лимитами, либо подписка + разовая покупка дополнительных функций. Главное — не плодить модели «потому что можем»: каждая добавляет ветки в биллинге, в support-сценариях и в юридических документах.
+
+## Платёжные шлюзы: что есть в 2026
+
+В Telegram-боте доступны три принципиально разных способа принимать деньги, и каждый закрывает свой класс задач.
+
+**Telegram Payments 2.0** — встроенный механизм: бот вызывает `sendInvoice`, пользователь платит через провайдера (ЮKassa, Stripe, Robokassa, Tinkoff), деньги идут на счёт продавца у провайдера. Telegram только посредник UI. Поддерживает разовые платежи и одноразовые подписки; настоящий рекуррент с привязкой карты делается уже на стороне провайдера.
+
+**Telegram Stars (XTR)** — внутренняя валюта Telegram. Только цифровые товары и услуги. Пользователь покупает Stars в App Store / Google Play, бот списывает их через `sendInvoice` с `currency: "XTR"`. Удобно для глобальной аудитории — не нужны российские реквизиты, не нужен 54-ФЗ. Минусы: комиссия ~30% (за счёт сторов), вывод только криптой через TON или фиатом через специальные процедуры.
+
+**Прямые ссылки на ЮKassa / CloudPayments / Tinkoff** — бот генерирует платёжную ссылку в браузере или WebView, пользователь оплачивает на стороне провайдера. Нужно для рекуррентных подписок (привязка карты + автосписания), для оплаты СБП, для нестандартных сценариев (частичная оплата, рассрочка).
+
+| Шлюз | Комиссия | Страны | Рекуррент | Чеки 54-ФЗ | Цифровые товары |
+|---|---|---|---|---|---|
+| Telegram Payments 2.0 + ЮKassa | 2.8–3.5% | RU + СНГ | Через ЮKassa | Да (через ЮKassa) | Да |
+| Telegram Payments 2.0 + Stripe | 2.9% + $0.30 | Глобально (без RU) | Да (Stripe Subscriptions) | Нет | Да |
+| Telegram Stars (XTR) | ~30% (стора + TG) | Глобально | Через `subscription_period` | Не требуется | Только цифровые |
+| ЮKassa напрямую | 2.8–3.5% | RU + СНГ | Да (с привязкой карты) | Да | Да |
+| CloudPayments | 2.7–3.5% | RU + СНГ | Да | Да | Да |
+| Tinkoff Acquiring | 2.0–2.9% | RU | Да | Да | Да |
+| Robokassa | 3.5–7% | RU + СНГ | Да | Да | Да |
+
+Практическое правило: если аудитория глобальная и продукт цифровой — Stars. Если аудитория российская и нужен рекуррент — ЮKassa или CloudPayments напрямую (с уведомлением через бота, оплата в WebView). Если разовые покупки в России и хочется бесшовного UX — Telegram Payments 2.0 с провайдером ЮKassa.
+
+## sendInvoice: первый платёж в боте
+
+Базовый сценарий разового платежа через Telegram Payments — три события: `sendInvoice` от бота, `pre_checkout_query` от Telegram (надо подтвердить за 10 секунд), `successful_payment` после оплаты.
+
+```python
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import LabeledPrice, PreCheckoutQuery, Message
+
+bot = Bot(token=TG_TOKEN)
+dp = Dispatcher()
+
+PROVIDER_TOKEN = "381764678:TEST:..."  # от @BotFather после подключения провайдера
+
+@dp.message(F.text == "/buy_pro")
+async def cmd_buy(msg: Message):
+    await bot.send_invoice(
+        chat_id=msg.chat.id,
+        title="Pro-подписка на 30 дней",
+        description="Безлимитные запросы, приоритетная очередь, экспорт в PDF.",
+        payload=f"sub_pro_30:{msg.from_user.id}",  # вернётся в successful_payment
+        provider_token=PROVIDER_TOKEN,
+        currency="RUB",
+        prices=[LabeledPrice(label="Pro 30 дней", amount=49900)],  # 499.00 ₽ в копейках
+        need_email=True,             # для чека 54-ФЗ
+        send_email_to_provider=True,
+        protect_content=False,
+    )
+
+@dp.pre_checkout_query()
+async def precheckout(q: PreCheckoutQuery):
+    # Последний шанс отказать: проверить, что товар ещё доступен,
+    # цена не изменилась, у пользователя нет активной подписки и т.п.
+    user_id = int(q.invoice_payload.split(":")[1])
+    if await user_has_active_sub(user_id):
+        await bot.answer_pre_checkout_query(q.id, ok=False,
+            error_message="У вас уже активная подписка.")
+        return
+    await bot.answer_pre_checkout_query(q.id, ok=True)
+
+@dp.message(F.successful_payment)
+async def on_paid(msg: Message):
+    sp = msg.successful_payment
+    await activate_subscription(
+        user_id=msg.from_user.id,
+        plan="pro",
+        period_days=30,
+        amount=sp.total_amount,
+        currency=sp.currency,
+        provider_payment_id=sp.provider_payment_charge_id,
+        telegram_payment_id=sp.telegram_payment_charge_id,
+    )
+    await msg.answer("Оплата получена. Pro активирован на 30 дней.")
+```
+
+Ключевые моменты: `payload` — это произвольная строка, в которую упаковывают всё, что нужно знать на стороне бота при `successful_payment` (тариф, период, user_id). `pre_checkout_query` обязателен — если не ответить, оплата отвалится. `provider_payment_charge_id` — идентификатор платежа у провайдера (ЮKassa), его сохраняем для возврата.
+
+## Stars (XTR): тот же поток, чуть другие нюансы
+
+Для Stars провайдер не нужен, `provider_token` остаётся пустым, `currency: "XTR"`, `amount` — целое число звёзд (без копеек). Возврат делается отдельным методом `refundStarPayment`.
+
+```python
+@dp.message(F.text == "/buy_pro_stars")
+async def cmd_buy_stars(msg: Message):
+    await bot.send_invoice(
+        chat_id=msg.chat.id,
+        title="Pro-подписка (30 дней)",
+        description="Доступ к Pro-функциям на месяц.",
+        payload=f"sub_pro_30:{msg.from_user.id}",
+        provider_token="",                 # для Stars пусто
+        currency="XTR",
+        prices=[LabeledPrice(label="Pro", amount=150)],  # 150 звёзд
+        # Для подписки в Stars: subscription_period=2592000 (30 дней в секундах)
+    )
+
+# Возврат
+await bot.refund_star_payment(
+    user_id=user_id,
+    telegram_payment_charge_id=charge_id,
+)
+```
+
+Stars-подписки (с `subscription_period`) Telegram продлевает сам и шлёт `successful_payment` с тем же payload при каждом списании — никакой работы со стороны бота, кроме обновления `current_period_end`.
+
+## Рекуррент через ЮKassa: привязка карты и автосписания
+
+Если нужен полноценный рекуррент в России, схема такая:
+
+1. Первый платёж проводится с флагом `save_payment_method: true`. ЮKassa возвращает `payment_method.id` — токен сохранённого метода оплаты.
+2. Токен сохраняется в БД, привязан к пользователю.
+3. Cron-задача за день до конца периода создаёт новый платёж с `payment_method_id` — ЮKassa списывает с привязанной карты без участия пользователя.
+4. Webhook `payment.succeeded` приходит через 1–10 секунд, бот продлевает подписку.
+
+```python
+# Первый платёж — с сохранением метода оплаты
+import yookassa
+from yookassa import Payment
+
+yookassa.Configuration.account_id = SHOP_ID
+yookassa.Configuration.secret_key = SECRET_KEY
+
+payment = Payment.create({
+    "amount": {"value": "499.00", "currency": "RUB"},
+    "confirmation": {
+        "type": "redirect",
+        "return_url": f"https://t.me/{BOT_USERNAME}",
+    },
+    "capture": True,
+    "save_payment_method": True,        # ключ к рекурренту
+    "description": f"Pro 30 дней, user {user_id}",
+    "metadata": {"user_id": user_id, "plan": "pro", "period_days": 30},
+    "receipt": {                        # 54-ФЗ
+        "customer": {"email": user_email},
+        "items": [{
+            "description": "Подписка Pro, 30 дней",
+            "quantity": "1",
+            "amount": {"value": "499.00", "currency": "RUB"},
+            "vat_code": 1,              # без НДС (УСН)
+            "payment_subject": "service",
+            "payment_mode": "full_payment",
+        }],
+    },
+}, idempotency_key=f"first:{user_id}:{int(time.time())}")
+
+# В webhook payment.succeeded получаем payment.payment_method.id и сохраняем
+
+# Автосписание (cron за день до окончания периода)
+def renew(user_id: int, payment_method_id: str, amount: str):
+    Payment.create({
+        "amount": {"value": amount, "currency": "RUB"},
+        "capture": True,
+        "payment_method_id": payment_method_id,
+        "description": f"Pro продление, user {user_id}",
+        "metadata": {"user_id": user_id, "plan": "pro", "period_days": 30, "renewal": True},
+        "receipt": {...},
+    }, idempotency_key=f"renew:{user_id}:{period_start}")
+```
+
+`idempotency_key` — обязателен, иначе при ретраях получите два списания. Ключ должен быть детерминированным от платежа, не от времени запроса.
+
+## Webhook: payment.succeeded, subscription.cancelled, refund
+
+Webhook от ЮKassa приходит на ваш HTTPS-эндпоинт. Список событий, которые надо обрабатывать в подписочном продукте:
+
+- `payment.succeeded` — деньги пришли. Активировать или продлить подписку, выдать доступ к закрытому каналу.
+- `payment.canceled` — платёж отклонён банком, списать не удалось. Перевести подписку в `grace`, уведомить пользователя.
+- `payment.waiting_for_capture` — двухстадийная схема, нужно вызвать capture.
+- `refund.succeeded` — деньги вернулись пользователю. Снять доступ, отозвать инвойс.
+
+```python
+from fastapi import FastAPI, Request, HTTPException
+import hmac, hashlib
+
+app = FastAPI()
+
+@app.post("/webhook/yookassa")
+async def yookassa_webhook(req: Request):
+    body = await req.body()
+    # ЮKassa подписывает webhook, сверяем по IP-белому списку и/или подписи
+    if req.client.host not in YOOKASSA_IPS:
+        raise HTTPException(403)
+
+    event = await req.json()
+    event_type = event["event"]
+    obj = event["object"]
+    payment_id = obj["id"]
+    metadata = obj.get("metadata", {})
+    user_id = int(metadata.get("user_id", 0))
+
+    # Идемпотентность: один и тот же payment_id не обрабатывается дважды
+    async with db.transaction():
+        already = await db.fetchval(
+            "SELECT 1 FROM payment_events WHERE payment_id=$1 AND event_type=$2",
+            payment_id, event_type,
+        )
+        if already:
+            return {"ok": True}
+
+        await db.execute(
+            "INSERT INTO payment_events(payment_id, event_type, raw, received_at) "
+            "VALUES($1, $2, $3, now())",
+            payment_id, event_type, json.dumps(event),
+        )
+
+        if event_type == "payment.succeeded":
+            method_id = obj.get("payment_method", {}).get("id")
+            await activate_or_renew(user_id, metadata, method_id)
+        elif event_type == "payment.canceled":
+            await mark_payment_failed(user_id, payment_id, obj.get("cancellation_details"))
+        elif event_type == "refund.succeeded":
+            await revoke_access(user_id, obj["payment_id"], obj["amount"])
+
+    return {"ok": True}
+```
+
+Без уникального индекса на `(payment_id, event_type)` ретраи webhook (а они будут — ЮKassa повторяет до 24 часов при 5xx) приведут к двойному начислению дней или двойному снятию доступа.
+
+<InlineCTA>Соберём подписочный биллинг для Telegram-бота под ключ — с рекуррентом и закрытым каналом</InlineCTA>
+
+## Схема БД: User, Subscription, Payment, FeatureAccess
+
+Минимально жизнеспособная модель данных для подписочного продукта:
+
+```sql
+CREATE TABLE users (
+    id              BIGINT PRIMARY KEY,           -- telegram user_id
+    username        TEXT,
+    email           TEXT,
+    payment_method  TEXT,                         -- сохранённый токен ЮKassa
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE plans (
+    code            TEXT PRIMARY KEY,             -- 'free', 'pro', 'enterprise'
+    title           TEXT NOT NULL,
+    price_kopeks    INTEGER NOT NULL,             -- 49900 = 499.00 ₽
+    period_days     INTEGER NOT NULL,             -- 30, 90, 365
+    features        JSONB NOT NULL DEFAULT '{}'   -- {"max_requests": 1000, "export_pdf": true}
+);
+
+CREATE TABLE subscriptions (
+    id                  BIGSERIAL PRIMARY KEY,
+    user_id             BIGINT REFERENCES users(id),
+    plan_code           TEXT REFERENCES plans(code),
+    status              TEXT NOT NULL,            -- 'trial' | 'active' | 'grace' | 'expired' | 'cancelled'
+    current_period_end  TIMESTAMPTZ NOT NULL,
+    auto_renew          BOOLEAN DEFAULT true,
+    grace_until         TIMESTAMPTZ,
+    cancelled_at        TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(user_id, plan_code)
+);
+
+CREATE INDEX ix_sub_period_end ON subscriptions(current_period_end)
+    WHERE status IN ('active', 'grace');
+
+CREATE TABLE payments (
+    id              BIGSERIAL PRIMARY KEY,
+    subscription_id BIGINT REFERENCES subscriptions(id),
+    provider        TEXT NOT NULL,                -- 'yookassa' | 'stars' | 'cloudpayments'
+    provider_id     TEXT NOT NULL,                -- payment_id у провайдера
+    amount_kopeks   INTEGER NOT NULL,
+    currency        TEXT NOT NULL,
+    status          TEXT NOT NULL,                -- 'pending' | 'succeeded' | 'failed' | 'refunded'
+    is_renewal      BOOLEAN DEFAULT false,
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(provider, provider_id)
+);
+
+CREATE TABLE payment_events (
+    id          BIGSERIAL PRIMARY KEY,
+    payment_id  TEXT NOT NULL,
+    event_type  TEXT NOT NULL,
+    raw         JSONB NOT NULL,
+    received_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(payment_id, event_type)
+);
+```
+
+Таблица `payment_events` — это аудит-лог. По ней восстанавливают историю при разборе спорных ситуаций («у меня списали, но доступ не дали»). Без неё через полгода будете гадать, какой платёж к чему относился.
+
+## Проверка доступа в handler-ах: декоратор @requires_subscription
+
+Логика «есть ли у пользователя доступ к фиче» должна быть в одном месте и не размазываться по handler-ам. Удобный паттерн — декоратор:
+
+```python
+from functools import wraps
+from aiogram.types import Message
+
+def requires_subscription(plan: str = "pro", feature: str | None = None):
+    def deco(handler):
+        @wraps(handler)
+        async def wrapper(msg: Message, *args, **kw):
+            sub = await get_active_subscription(msg.from_user.id)
+            if not sub or sub.plan_code not in plans_at_or_above(plan):
+                await msg.answer(
+                    f"Эта функция доступна на тарифе {plan.upper()} и выше.\n"
+                    f"Оформить: /subscribe"
+                )
+                return
+            if feature and not sub.has_feature(feature):
+                await msg.answer(f"Функция «{feature}» не входит в ваш тариф.")
+                return
+            if sub.status == "grace":
+                await msg.answer(
+                    "Не удалось списать оплату — обновите карту в /billing. "
+                    "Доступ сохранён ещё на " + sub.grace_days_left() + " дней."
+                )
+            return await handler(msg, *args, **kw)
+        return wrapper
+    return deco
+
+@dp.message(F.text == "/export_pdf")
+@requires_subscription(plan="pro", feature="export_pdf")
+async def export_pdf(msg: Message):
+    # ... генерация PDF
+    await msg.answer_document(pdf_file)
+```
+
+`get_active_subscription` должен бить в Redis-кэш (TTL 60 секунд), иначе на каждый клик в чат будете ходить в Postgres. Инвалидация кэша — при `payment.succeeded`, `refund.succeeded` и ручной отмене.
+
+## Trial-период и grace-период
+
+**Trial** — бесплатный пробный доступ. Два варианта реализации:
+
+1. *Trial без карты* — пользователь активирует, через N дней доступ просто отключается. Конверсия в платную подписку 5–15%.
+2. *Trial с привязкой карты* — пользователь привязывает карту (можно списать 1 ₽ и сразу вернуть для верификации), через N дней автосписание полной суммы. Конверсия 30–60%, но churn на самом trial выше из-за «ой, я забыл отменить».
+
+Для второго варианта обязательно: уведомление за 3 дня до конца trial с явной кнопкой «отменить», плюс уведомление сразу после первого списания с инструкцией возврата (152-ФЗ требует возможности отказа).
+
+**Grace** — льготный период после неудачного списания. Стандартная сетка:
+
+- День 0: списание не прошло. Подписка переходит в `grace`, доступ сохранён, в чат уходит уведомление.
+- День 1: повторная попытка списать.
+- День 3: ещё одна попытка + напоминание.
+- День 7: финальная попытка. Не получилось — `expired`, доступ снят.
+
+```python
+async def attempt_renewal(sub: Subscription):
+    user = await get_user(sub.user_id)
+    try:
+        payment = Payment.create({
+            "amount": {"value": format_price(sub.plan.price_kopeks), "currency": "RUB"},
+            "capture": True,
+            "payment_method_id": user.payment_method,
+            "description": f"Продление {sub.plan.title}",
+            "metadata": {"user_id": user.id, "subscription_id": sub.id, "renewal": True},
+        }, idempotency_key=f"renew:{sub.id}:{sub.current_period_end.date()}")
+    except yookassa.PaymentError as e:
+        await mark_grace(sub, reason=str(e))
+        await notify_user(user.id,
+            "Не удалось списать оплату. Доступ сохранён до "
+            f"{sub.grace_until:%d.%m}. Обновите карту: /billing")
+```
+
+Grace снижает churn на 15–30% по сравнению со схемой «не списалось — сразу отрезали». Большинство отказов — технические (лимит банка, истекшая карта), и пользователь возвращается со второй попытки.
+
+## Промокоды, скидки, реферальная программа
+
+Промокоды в подписочном продукте обычно бывают трёх типов:
+
+- **Скидка на первый период** (`-50% на первый месяц`).
+- **Фиксированная скидка** (`-200 ₽ на любой тариф`).
+- **Бесплатные дни** (`+14 дней к подписке`).
+
+```sql
+CREATE TABLE promo (
+    code         TEXT PRIMARY KEY,
+    type         TEXT NOT NULL,              -- 'percent' | 'fixed' | 'days'
+    value        INTEGER NOT NULL,
+    applies_to   TEXT[] DEFAULT '{}',        -- список plan_code; пусто = все
+    valid_until  TIMESTAMPTZ,
+    max_uses     INTEGER,
+    max_per_user INTEGER DEFAULT 1,
+    used_count   INTEGER DEFAULT 0,
+    is_active    BOOLEAN DEFAULT true
+);
+
+CREATE TABLE promo_usage (
+    code     TEXT REFERENCES promo(code),
+    user_id  BIGINT,
+    sub_id   BIGINT,
+    used_at  TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (code, user_id, sub_id)
+);
+```
+
+Применение — атомарной транзакцией: `INSERT ... ON CONFLICT DO NOTHING` в `promo_usage` плюс `UPDATE promo SET used_count = used_count + 1 WHERE used_count < max_uses`. Ноль затронутых строк = лимит исчерпан, откат.
+
+**Реферальная программа** — двухсторонняя. Приглашающий получает `30%` от каждой оплаты приглашённого в течение N месяцев (life-time реферальные программы убивают unit-экономику). Приглашённый получает скидку на первый платёж.
+
+```sql
+CREATE TABLE referrals (
+    id              BIGSERIAL PRIMARY KEY,
+    referrer_id     BIGINT REFERENCES users(id),
+    referred_id     BIGINT REFERENCES users(id),
+    reward_pct      INTEGER NOT NULL,            -- 30
+    reward_until    TIMESTAMPTZ,                 -- когда заканчивается выплата комиссии
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(referred_id)                          -- один пользователь = один реферер
+);
+
+CREATE TABLE referral_rewards (
+    id          BIGSERIAL PRIMARY KEY,
+    referrer_id BIGINT,
+    payment_id  BIGINT REFERENCES payments(id),
+    amount      INTEGER NOT NULL,                -- в копейках
+    status      TEXT NOT NULL,                   -- 'pending' | 'paid'
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+```
+
+При `payment.succeeded` ищем реферала, считаем `amount * reward_pct / 100` и кладём в `referral_rewards`. Выплата — отдельным сценарием (Stars в кошелёк, перевод по СБП, скидка на собственную подписку).
+
+## Возвраты: refundStarPayment, ЮKassa refund, частичный возврат
+
+Возврат бывает трёх видов:
+
+1. **Полный возврат** — клиент в течение 14 дней после оплаты передумал.
+2. **Частичный возврат** — пропорционально неиспользованным дням.
+3. **Возврат с компенсацией** — при сбое сервиса возвращаем + бонус.
+
+```python
+# ЮKassa
+from yookassa import Refund
+
+refund = Refund.create({
+    "payment_id": payment.provider_id,
+    "amount": {"value": "499.00", "currency": "RUB"},   # или меньше для частичного
+    "description": "Возврат по обращению клиента",
+    "receipt": {                                         # обязательный возвратный чек
+        "customer": {"email": user.email},
+        "items": [...],
+    },
+}, idempotency_key=f"refund:{payment.id}")
+
+# Telegram Stars
+await bot.refund_star_payment(
+    user_id=user_id,
+    telegram_payment_charge_id=payment.provider_id,
+)
+```
+
+**Частичный возврат** считается как `paid_amount * (unused_days / period_days)`, минус удержания (если в оферте указано — обычно 10–20% админ-сбор за досрочное расторжение). Удержания должны быть прописаны в оферте, иначе по 161-ФЗ обязаны вернуть полную сумму.
+
+После `refund.succeeded` доступ снимается мгновенно — иначе клиент получит и деньги, и сервис.
+
+## Продление: напоминания и авто-продление
+
+UX продления подписки делается из трёх уведомлений:
+
+- **За 3 дня до конца периода** — «подписка продлится автоматически 12 марта на 499 ₽. Управлять: /billing». Кнопка «отключить авто-продление» обязательна.
+- **В момент успешного продления** — «оплачено 499 ₽, подписка продлена до 12 апреля. Чек: <ссылка>».
+- **При сбое продления** — «не удалось списать. Обновите карту: /billing. Доступ до 19 марта (grace 7 дней)».
+
+Без первого уведомления получите волну возвратов и жалоб «у меня списали без предупреждения» — особенно неприятно, потому что банки в таких случаях охотно делают чарджбек.
+
+## Уведомления о статусе подписки и инвойсы
+
+Команда `/billing` или `/subscribe` показывает текущее состояние:
+
+```
+Тариф: Pro
+Статус: активен
+Действует до: 12.03.2026 (через 18 дней)
+Авто-продление: включено
+Способ оплаты: карта *4521
+
+[Изменить тариф]  [Отключить авто-продление]
+[Сменить карту]   [История платежей]
+[Получить инвойс] [Отменить подписку]
+```
+
+Инвойс по запросу — отдельная фича для B2B-клиентов: бот генерирует PDF с реквизитами ИП/ООО клиента, привязанными к его профилю. Удобно, когда подписку оплачивает компания, а пользуется один сотрудник.
+
+<InlineCTA>Подключим ЮKassa с рекуррентом, чеками 54-ФЗ и сценариями grace за 3–4 недели</InlineCTA>
+
+## Аналитика подписочного бизнеса: MRR, churn, LTV
+
+Без этих метрик подписочный продукт работает вслепую. Минимум, который нужно считать каждый день:
+
+| Метрика | Формула | Норма |
+|---|---|---|
+| MRR | Сумма всех активных подписок, нормализованная к месяцу | Растёт месяц-к-месяцу |
+| ARR | MRR × 12 | Для оценки бизнеса целиком |
+| New MRR | MRR от новых подписчиков за период | Зависит от маркетинга |
+| Expansion MRR | MRR от апгрейдов (free → pro, pro → enterprise) | 10–30% от New MRR |
+| Churn rate | Отписавшиеся / база на начало периода | До 5–7% в месяц |
+| Gross Churn $ | Сумма потерянного MRR | Должна перекрываться New + Expansion |
+| Net Churn | Gross Churn − Expansion | Цель: отрицательный (компания растёт даже без новых) |
+| LTV | ARPU / Churn rate | LTV > 3× CAC |
+| Conversion free→paid | Платящих / зарегистрированных | 2–10% (B2C), 10–25% (B2B) |
+| Trial conversion | Купивших после trial / закончивших trial | 30–60% (с картой), 5–15% (без карты) |
+
+Сложить дашборд можно в Metabase / Superset / Grafana поверх Postgres — данных немного, отдельный analytics warehouse не нужен пока подписчиков меньше 100k.
+
+```sql
+-- MRR на конец дня
+SELECT
+    date_trunc('day', current_date) AS day,
+    SUM(p.price_kopeks::float / 100 * 30 / p.period_days) AS mrr_rub
+FROM subscriptions s
+JOIN plans p ON p.code = s.plan_code
+WHERE s.status IN ('active', 'grace')
+  AND s.current_period_end > current_date;
+
+-- Cohort-churn по месяцу старта
+SELECT
+    date_trunc('month', s.created_at) AS cohort,
+    date_trunc('month', s.cancelled_at) AS churn_month,
+    COUNT(*) AS churned
+FROM subscriptions s
+WHERE s.cancelled_at IS NOT NULL
+GROUP BY 1, 2
+ORDER BY 1, 2;
+```
+
+## 54-ФЗ: фискальные чеки
+
+В России цифровые услуги (включая подписки) подпадают под 54-ФЗ — на каждую оплату выбивается фискальный чек, копия уходит покупателю и в ОФД. Облачные кассы для бота:
+
+- **АТОЛ Онлайн** — самая распространённая, интеграция через API ОФД-провайдера.
+- **OFD.ru (Первый ОФД)** — тариф «Облачная касса 12 месяцев».
+- **МодульКасса**, **Атол Касса от Тинькофф** — альтернативы.
+- **Через эквайер** — ЮKassa / CloudPayments / Tinkoff умеют выбивать чеки сами, если в запрос платежа передать `receipt`. Это самый простой путь — отдельная касса не нужна.
+
+Для подписки в `receipt` указываются:
+
+- `payment_subject: "service"` — это услуга, не товар.
+- `payment_mode: "full_payment"` — полный расчёт.
+- `vat_code` — `1` (без НДС, УСН), `2` (10%), `3` (20%) и т.д.
+- `customer.email` или `customer.phone` — обязательное поле, чек уходит туда.
+
+При возврате выбивается **возвратный чек** (`payment_mode: "refund"`) — провайдеры делают это автоматически при `refund.create` с правильным `receipt`.
+
+## 152-ФЗ и оферта: согласие перед платежом
+
+Перед первым платежом пользователь должен согласиться с офертой и политикой обработки персональных данных. В Telegram-боте это делается так:
+
+1. После клика «Купить» бот шлёт сообщение с двумя кнопками-ссылками («Оферта», «Политика ПДн») и одной inline-кнопкой «Согласен и плачу».
+2. Клик по «Согласен и плачу» логируется в `consents` (user_id, version_offer, version_pdn, consented_at).
+3. Только после этого вызывается `sendInvoice`.
+
+Без явного логирования согласия в случае спора (Роспотребнадзор, ФАС, чарджбек) нечем подтвердить, что пользователь принял условия. Для рекуррентных списаний оферта должна явно содержать пункт о согласии на автосписания — иначе банк по жалобе клиента может вернуть деньги, а вас оштрафовать.
+
+```sql
+CREATE TABLE consents (
+    id              BIGSERIAL PRIMARY KEY,
+    user_id         BIGINT NOT NULL,
+    consent_type    TEXT NOT NULL,            -- 'offer' | 'pdn' | 'recurring'
+    document_version TEXT NOT NULL,
+    consented_at    TIMESTAMPTZ DEFAULT now(),
+    user_agent      TEXT,
+    ip              INET
+);
+```
+
+Для трансграничной передачи данных (если бот хостится за пределами РФ или использует Telegram-инфраструктуру) — отдельное уведомление в РКН до начала обработки. Подробнее — в `NEED.MD` репозитория.
+
+## Чек-лист готовности подписочного бота
+
+- [ ] Выбран и обоснован платёжный шлюз (Stars / ЮKassa / прямая ссылка).
+- [ ] Реализован `pre_checkout_query` с проверкой бизнес-условий.
+- [ ] Webhook идемпотентен по `(payment_id, event_type)`.
+- [ ] Сохраняется `payment_method_id` для рекуррента (если применимо).
+- [ ] Cron автосписаний с idempotency_key, привязанным к периоду.
+- [ ] Grace 3–7 дней с тремя попытками списания.
+- [ ] Уведомление за 3 дня до автопродления с кнопкой отмены.
+- [ ] Декоратор `@requires_subscription` в одном месте, не в каждом handler.
+- [ ] Кэш активной подписки в Redis с инвалидацией по событиям.
+- [ ] Логирование согласия с офертой и политикой ПДн до первого платежа.
+- [ ] Чеки 54-ФЗ выбиваются на оплату и на возврат.
+- [ ] Возврат снимает доступ мгновенно.
+- [ ] Дашборд с MRR, churn, LTV, trial conversion.
+- [ ] Отдельная страница `/billing` со всеми операциями (карта, тариф, история).
+- [ ] Юридические документы на месте: оферта, политика ПДн, условия рекуррента.
+
+## Итого
+
+Платная подписка в Telegram-боте — это не «прикрутить оплату», а полноценный биллинг со статусами, рекуррентом, grace, возвратами, аналитикой и юридической обвязкой. Stars подходят для глобальных цифровых продуктов с минимальными требованиями, ЮKassa с рекуррентом — для большинства российских кейсов, прямые ссылки на CloudPayments / Tinkoff — для нестандартных сценариев (СБП, рассрочка, B2B-инвойсы). Срок разработки реалистичной подписочной системы — от 3 недель для разовой оплаты до 8–10 недель для полнофункционального биллинга с рекуррентом, grace, реферальной программой и B2B-инвойсами.
+
+<Faq>
+  <FaqItem q="Какие модели платной подписки бывают в Telegram-боте?">
+    Пять основных моделей. Разовый платёж — для курсов, отчётов и цифровых товаров, простая реализация. Подписка месяц/год — для SaaS, доступа к контенту, комьюнити, требует рекуррента. Тиры free/pro/enterprise — для B2B-инструментов с разной функциональностью. Pay-per-use — для запросов к LLM, обработки файлов, API-обёрток, биллинг по событиям. Donate — для развлекательных и opensource-ботов. Часто внутри одного продукта живут две модели: бесплатный тир + платная подписка с лимитами. Главное — не плодить модели, каждая добавляет ветки в биллинге, support и юридических документах.
+  </FaqItem>
+  <FaqItem q="Telegram Stars или рекуррент через ЮKassa — что выбрать?">
+    Зависит от продукта и аудитории. Telegram Stars — встроенная валюта Telegram, только цифровые товары, комиссия около 30%, удобно для глобальных продуктов без российских реквизитов и без 54-ФЗ. ЮKassa с рекуррентом — стандарт для российской аудитории, комиссия 2.8–3.5%, поддержка 54-ФЗ через автоматические чеки, полный контроль над тарифной логикой и grace. Stripe Subscriptions — для глобальной аудитории за пределами РФ. CloudPayments и Tinkoff Acquiring — альтернативы ЮKassa, удобны при нестандартных сценариях (СБП, BNPL, частичная оплата). Практическое правило: глобальный цифровой продукт — Stars, российская аудитория с подпиской — ЮKassa, B2B с инвойсами — прямые ссылки CloudPayments или Tinkoff.
+  </FaqItem>
+  <FaqItem q="Как реализовать рекуррентные списания через ЮKassa?">
+    Схема четырёхэтапная. Первый платёж проводится с флагом save_payment_method равным true, ЮKassa возвращает payment_method.id — токен сохранённого метода оплаты. Токен сохраняется в БД, привязан к пользователю. Cron-задача за день до конца периода создаёт новый платёж с payment_method_id — ЮKassa списывает с привязанной карты без участия пользователя. Webhook payment.succeeded приходит через 1–10 секунд, бот продлевает подписку. Обязателен idempotency_key на каждом запросе платежа, иначе при ретраях получите два списания. Ключ должен быть детерминированным от платежа, не от времени запроса (например, renew плюс subscription_id плюс дата периода).
+  </FaqItem>
+  <FaqItem q="Как обрабатывать webhook от платёжного провайдера?">
+    Webhook приходит на HTTPS-эндпоинт, проверяется по белому списку IP провайдера или подписи запроса. Главное правило — идемпотентность через уникальный индекс на (payment_id, event_type) в таблице payment_events. Перед любым изменением состояния проверяем, не обработан ли уже этот event. Без этого ретраи webhook (а они будут, ЮKassa повторяет до 24 часов при 5xx) приведут к двойному начислению дней или двойному снятию доступа. Обрабатывать минимум: payment.succeeded (активировать или продлить), payment.canceled (перевести в grace), refund.succeeded (снять доступ). Раздельно логируем сырое событие и состояние подписки — для аудита спорных ситуаций.
+  </FaqItem>
+  <FaqItem q="Как устроена проверка доступа к платным функциям в handler-ах?">
+    Через декоратор requires_subscription, который проверяет активную подписку и наличие конкретной фичи в тарифе. Логика «есть ли доступ» лежит в одном месте, а не размазана по handler-ам. Декоратор бьёт в кэш активной подписки в Redis (TTL 60 секунд) — иначе на каждый клик в чат идём в Postgres. Инвалидация кэша при payment.succeeded, refund.succeeded и ручной отмене. Декоратор отдельно обрабатывает grace-статус: пользователю показывается баннер «не удалось списать, обновите карту», но доступ к функции даётся. Это важная UX-деталь: внезапная блокировка из-за технического сбоя у банка убивает доверие к продукту.
+  </FaqItem>
+  <FaqItem q="Что такое grace-период и как его реализовать?">
+    Grace — льготный период после неудачного списания, когда доступ сохранён, а биллинг повторяет попытки. Стандартная сетка: день 0 списание не прошло, подписка переходит в grace, в чат уходит уведомление; день 1 повторная попытка; день 3 ещё одна попытка плюс напоминание; день 7 финальная попытка, не получилось — expired. Grace снижает churn на 15–30% по сравнению со схемой «не списалось — сразу отрезали». Большинство отказов технические (лимит банка, истекшая карта), и пользователь возвращается со второй попытки. Реализация — отдельный воркер, который проходит по подпискам с current_period_end в прошлом и status в active или grace, и пытается списать через payment_method_id.
+  </FaqItem>
+  <FaqItem q="Какие метрики обязательно считать для подписочного бота?">
+    Минимум — MRR, churn, LTV. MRR — сумма всех активных подписок, нормализованная к месяцу, главная метрика подписочного бизнеса. Churn rate — отписавшиеся за период делёные на базу на начало периода, норма до 5–7% в месяц. LTV — средний доход с подписчика за всё время, должен быть больше тройного CAC. Conversion free→paid — 2–10% для B2C, 10–25% для B2B. Trial conversion — 30–60% при trial с картой, 5–15% без карты. Net Churn (Gross Churn минус Expansion MRR) — цель отрицательный, тогда компания растёт даже без новых клиентов. Дашборд складывается в Metabase или Superset поверх Postgres — отдельный analytics warehouse не нужен пока подписчиков меньше 100k.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка в течение рабочего дня.
+</EndCTA>

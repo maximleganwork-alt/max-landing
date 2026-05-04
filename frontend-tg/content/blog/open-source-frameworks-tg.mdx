@@ -1,0 +1,368 @@
+---
+title: "Open Source фреймворки для Telegram-ботов в 2026"
+description: "Обзор живых open-source фреймворков для Telegram-ботов в 2026: aiogram, grammY, Telegraf, python-telegram-bot, telebot и менее известные альтернативы."
+date: "2026-02-02"
+tags: ["Telegram", "разработка", "тренды"]
+---
+
+Bot API стабилен, но экосистема фреймворков активно развивается. В 2026 году у разработчика нет недостатка в инструментах: для Python есть aiogram и PTB, для Node — grammY и Telegraf, для Go — gotgbot, для Rust — teloxide. В этой статье разберём не только «что есть», но и как выглядит код, как устроены FSM, тестирование, плагины и production-обвязка. Цель — дать тимлиду основу для осознанного выбора, а разработчику — стартовый шаблон, с которого можно сразу писать.
+
+Все примеры ниже минимальны — `/start` и одно текстовое сообщение. Этого хватает, чтобы увидеть синтаксис, способ роутинга и идеологию фреймворка. Полные production-шаблоны мы выкладываем отдельно.
+
+## Aiogram 3.x — лидер Python-сообщества
+
+Aiogram 3 — полностью переписанная версия классического фреймворка. Релизы выходят раз в 1–2 месяца, новые методы Bot API добавляются обычно в течение пары недель после анонса. Главные фишки — Pydantic-объекты для всех апдейтов, роутер-ориентированная архитектура, FSM из коробки и магический объект `F` для декларативных фильтров.
+
+Минимальный бот:
+
+```python
+import asyncio
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.filters import CommandStart
+from aiogram.types import Message
+
+router = Router()
+
+@router.message(CommandStart())
+async def start(message: Message) -> None:
+    await message.answer(f"Привет, {message.from_user.first_name}!")
+
+@router.message(F.text)
+async def echo(message: Message) -> None:
+    await message.answer(message.text)
+
+async def main() -> None:
+    bot = Bot(token="TOKEN")
+    dp = Dispatcher()
+    dp.include_router(router)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Архитектура построена вокруг роутеров — это аналог blueprint-ов в Flask. В большом проекте каждый бизнес-модуль (онбординг, платежи, поддержка) живёт в собственном роутере, который потом подключается к диспетчеру. Это даёт чистую изоляцию состояния и упрощает тестирование.
+
+FSM реализована через классы `StatesGroup` и контекст `FSMContext`. Хранилище абстрагировано: `MemoryStorage` для разработки, `RedisStorage`, `MongoStorage` или собственный backend для продакшена. Переходы делаются вызовом `await state.set_state(...)` и `await state.update_data(...)`.
+
+Тестирование удобно делать через `aiogram_tests` или вручную, мокая `Bot` и собирая фейковые `Update`. Pydantic-модели сериализуются в JSON, поэтому фикстуры удобно держать в файлах.
+
+Когда выбрать: команда на Python, нужен полный набор инструментов, важна свежесть Bot API. Подходит для 95% проектов.
+
+## python-telegram-bot v21 — стабильный ветеран
+
+PTB существует с 2015 года и постепенно мигрировал с sync на async. В версии 20 синхронный API окончательно удалён, остался только `asyncio`. Архитектура построена вокруг класса `Application`, к которому подключаются `Handler`-ы.
+
+```python
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(f"Привет, {update.effective_user.first_name}!")
+
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(update.message.text)
+
+def main() -> None:
+    app = Application.builder().token("TOKEN").build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
+```
+
+Сильные стороны — встроенный `JobQueue` для отложенных задач (cron-подобные расписания, разовые job-ы), `ConversationHandler` для диалогов с явным графом состояний, `PicklePersistence` и `PostgresPersistence` для сохранения состояния между рестартами.
+
+Слабые стороны — типизация менее строгая, чем у aiogram. `context.user_data` — это просто `dict`, без статической проверки ключей. Декораторы и магические фильтры отсутствуют, всё императивно. Зато документация одна из лучших в экосистеме — есть подробные туториалы и около сотни примеров в репозитории.
+
+Когда выбрать: уже есть PTB-кодовая база, нужен встроенный JobQueue без отдельного APScheduler/Celery, ценится стабильность API и медленные, продуманные релизы.
+
+## grammY — современный TypeScript-фреймворк
+
+grammY быстро стал стандартом в Node-экосистеме. Полностью типизирован, плагины (menu, conversations, runner, ratelimiter, sessions, hydrate) покрывают все основные задачи. Запускается на Node, Deno и Bun — на последнем держит самую высокую пропускную способность за счёт быстрого HTTP-сервера.
+
+```ts
+import { Bot, Context } from "grammy";
+
+const bot = new Bot<Context>(process.env.BOT_TOKEN!);
+
+bot.command("start", async (ctx) => {
+  await ctx.reply(`Привет, ${ctx.from?.first_name ?? "друг"}!`);
+});
+
+bot.on("message:text", async (ctx) => {
+  await ctx.reply(ctx.message.text);
+});
+
+bot.start();
+```
+
+Главная сила — типы. `ctx.message` корректно сужается в зависимости от фильтра: внутри `bot.on("message:text")` `ctx.message.text` точно `string`, а не `string | undefined`. Это убирает целый класс рантайм-ошибок.
+
+FSM реализуется через плагин `@grammyjs/conversations` — он позволяет писать диалоги как обычные async-функции с `await conversation.wait()`, без явных state-классов. Плагин `@grammyjs/menu` строит интерактивные клавиатуры с авто-обновлением. `@grammyjs/runner` параллелит обработку апдейтов.
+
+Webhook-режим включается одной строкой через `webhookCallback(bot, "express")` или адаптеры для Hono, Fastify, Elysia. На Bun + Elysia холодный handler уходит за `<5ms` без какой-либо ручной оптимизации.
+
+Тестирование — через `grammy-test` либо самостоятельно, мокая `Api`. Поскольку весь код типизирован, рефакторинг через `tsc --noEmit` находит большинство регрессий ещё до запуска.
+
+Когда выбрать: новый проект на TS/Node, важна типизация, команда любит современный async-стиль. В 2026 для Node-стека это выбор по умолчанию.
+
+<InlineCTA>Поможем спроектировать архитектуру бота</InlineCTA>
+
+## Telegraf — прежний стандарт Node
+
+Telegraf долго был де-факто стандартом для Node, потом темп разработки замедлился, а grammY забрал большую часть нового кода. Тем не менее проект жив, поддерживает свежие версии Bot API и обновляется примерно раз в квартал.
+
+```ts
+import { Telegraf } from "telegraf";
+import { message } from "telegraf/filters";
+
+const bot = new Telegraf(process.env.BOT_TOKEN!);
+
+bot.start((ctx) => ctx.reply(`Привет, ${ctx.from.first_name}!`));
+
+bot.on(message("text"), (ctx) => ctx.reply(ctx.message.text));
+
+bot.launch();
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
+```
+
+FSM в Telegraf реализуется через scenes — каждая сцена это отдельный конечный автомат с обработчиками `enter`, `leave` и сообщениями внутри. Подход императивный, в духе Express middleware. В целом всё работает, но типизация заметно слабее grammY: многие свойства `ctx` имеют тип `any` без дополнительных дженериков.
+
+Когда выбрать: уже есть кодовая база на Telegraf, миграция дороже, чем поддержка. Для нового проекта — берите grammY.
+
+## go-telegram-bot-api и gotgbot — Go для production
+
+В Go-экосистеме два живых выбора: `go-telegram-bot-api/telegram-bot-api` (исторический лидер) и `PaulSonOfLars/gotgbot` (более современный, лучше типизирован). Для новых проектов чаще берут gotgbot.
+
+Минимальный пример на gotgbot v2:
+
+```go
+package main
+
+import (
+	"log"
+	"os"
+
+	"github.com/PaulSonOfLars/gotgbot/v2"
+	"github.com/PaulSonOfLars/gotgbot/v2/ext"
+	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers"
+)
+
+func start(b *gotgbot.Bot, ctx *ext.Context) error {
+	_, err := ctx.EffectiveMessage.Reply(b, "Привет, "+ctx.EffectiveUser.FirstName+"!", nil)
+	return err
+}
+
+func main() {
+	bot, err := gotgbot.NewBot(os.Getenv("BOT_TOKEN"), nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	dispatcher := ext.NewDispatcher(nil)
+	dispatcher.AddHandler(handlers.NewCommand("start", start))
+	updater := ext.NewUpdater(dispatcher, nil)
+	if err := updater.StartPolling(bot, nil); err != nil {
+		log.Fatal(err)
+	}
+	updater.Idle()
+}
+```
+
+Плюсы Go: малая память (бот на 50 тысяч пользователей живёт в `<50 MB` RSS), быстрый старт, статическая типизация, простой деплой одним бинарём. Минусы — многословный код, ручная работа с указателями и nil-значениями, FSM приходится писать самостоятельно (готового решения уровня aiogram-FSM нет).
+
+Когда выбрать: критичны ресурсы (бот на VPS за 200₽/мес обслуживает десятки тысяч пользователей), важна предсказуемая задержка, команда уже работает с Go.
+
+## teloxide и менее известные
+
+**teloxide (Rust)** — основной выбор для Rust. Полностью типизирован, имеет собственный DSL для FSM (`dialogue`), макросы для команд. Высокий порог входа, но получившийся бот работает как часы и потребляет минимум ресурсов. Подходит, когда у команды уже есть Rust-стек или когда бот обрабатывает миллионы сообщений в день и нужна предсказуемая латентность.
+
+**Telegram.Bot (C#)** — основной выбор для .NET, поддерживается активно, идиоматичный async/await, хорошо встраивается в ASP.NET Core. **Nutgram (PHP)** — современный фреймворк с Laravel-стилем, удобен для интеграций в существующие PHP-проекты. **ExGram (Elixir)** — нишевый, но удобный для Phoenix-команд. **TelegramBots (Java)** и **Kotlin telegram-bot-api от InsanusMokrassar** — зрелые JVM-варианты. **python-telegram-bot-raw**, **Hydrogram**, **Pyrogram** — это уже MTProto-клиенты, не Bot API: дают чтение всех сообщений, юзербота, большие файлы.
+
+## Сравнительная таблица
+
+| Фреймворк | Язык | Async | FSM | Webhook | Long-poll | Типизация | Активность |
+|---|---|---|---|---|---|---|---|
+| aiogram 3 | Python | да | встроенная | да | да | строгая (Pydantic) | релиз раз в 1–2 мес |
+| python-telegram-bot 21 | Python | да | ConversationHandler | да | да | средняя | релиз раз в 2–3 мес |
+| pyTelegramBotAPI | Python | да/нет | базовая | да | да | слабая | активный |
+| grammY | TS/JS | да | плагин conversations | да | да | строгая | релиз раз в 1–2 мес |
+| Telegraf | TS/JS | да | scenes | да | да | средняя | релиз раз в квартал |
+| gotgbot v2 | Go | через горутины | ручная | да | да | строгая | активный |
+| teloxide | Rust | да | dialogue DSL | да | да | строгая | активный |
+| Telegram.Bot | C# | да | ручная | да | да | строгая | активный |
+
+GitHub-звёзды на февраль 2026 (порядок величины): grammY ~5k, Telegraf ~8k, aiogram ~5k, PTB ~26k, teloxide ~3k, gotgbot ~1k. Звёзды — косвенный показатель: PTB лидирует по абсолютному числу, потому что появился раньше всех, но темп новых звёзд выше у grammY и aiogram 3.
+
+## Когда выбрать какой
+
+- **Python-команда, любой проект** — aiogram 3.
+- **Python-команда, унаследованный код или нужен JobQueue** — python-telegram-bot 21.
+- **TS/Node, новый проект** — grammY.
+- **TS/Node, унаследованный код** — Telegraf.
+- **Максимальный throughput при минимальных ресурсах** — gotgbot (Go) или teloxide (Rust).
+- **Быстрый прототип в 50–200 строк** — pyTelegramBotAPI.
+- **Существующий .NET-стек** — Telegram.Bot.
+- **Существующий Laravel-стек** — Nutgram.
+
+Главный принцип — фреймворк подбирается под язык команды, а не наоборот. Бот живёт годами, и поддерживать его придётся теми людьми, которые есть, а не нанимать Rust-разработчика ради красивого `dialogue` DSL.
+
+## FSM: подходы и примеры
+
+FSM (finite state machine) нужна почти любому нетривиальному боту: онбординг по шагам, заполнение анкеты, многошаговая оплата. Подходы во фреймворках разные.
+
+**aiogram** — декларативные классы:
+
+```python
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+
+class Order(StatesGroup):
+    waiting_name = State()
+    waiting_phone = State()
+
+@router.message(CommandStart())
+async def begin(message: Message, state: FSMContext) -> None:
+    await state.set_state(Order.waiting_name)
+    await message.answer("Как вас зовут?")
+
+@router.message(Order.waiting_name)
+async def got_name(message: Message, state: FSMContext) -> None:
+    await state.update_data(name=message.text)
+    await state.set_state(Order.waiting_phone)
+    await message.answer("Телефон?")
+```
+
+**grammY** — функциональные диалоги через `conversations`:
+
+```ts
+async function order(conversation: Conversation, ctx: Context) {
+  await ctx.reply("Как вас зовут?");
+  const name = (await conversation.waitFor("message:text")).message.text;
+  await ctx.reply("Телефон?");
+  const phone = (await conversation.waitFor("message:text")).message.text;
+  await ctx.reply(`Спасибо, ${name}, перезвоним на ${phone}.`);
+}
+```
+
+**Telegraf** — scenes:
+
+```ts
+const orderScene = new Scenes.WizardScene<Scenes.WizardContext>(
+  "order",
+  async (ctx) => { await ctx.reply("Как вас зовут?"); return ctx.wizard.next(); },
+  async (ctx) => { /* ... */ return ctx.wizard.next(); }
+);
+```
+
+**PTB** — `ConversationHandler` с явной мапой `state -> handlers`. **gotgbot/teloxide** — обычно собственная FSM поверх Redis или БД, готового решения нет.
+
+Хранилище состояния всегда выносится наружу процесса: `MemoryStorage` теряет данные при рестарте, под продакшн нужен Redis или Postgres. Aiogram, grammY и PTB поставляют адаптеры из коробки.
+
+## Webhook vs long-polling
+
+Все рассмотренные фреймворки поддерживают оба режима. Long-polling проще в разработке (не нужен внешний URL), webhook быстрее в продакшене и масштабируется горизонтально.
+
+Особенности по фреймворкам:
+- **aiogram** — `dp.start_polling(bot)` или `aiohttp.web` + `SimpleRequestHandler` для webhook.
+- **PTB** — `app.run_polling()` или `app.run_webhook(...)` с встроенным aiohttp-сервером.
+- **grammY** — `bot.start()` для polling; webhook через `webhookCallback(bot, "express" | "hono" | "fastify" | ...)`.
+- **Telegraf** — `bot.launch()` для polling, `bot.launch({ webhook: { domain, port } })` для webhook.
+- **gotgbot** — `updater.StartPolling()` или `updater.StartWebhook(...)` с встроенным http-сервером.
+
+При webhook важно настроить `secret_token` (Telegram добавит его в заголовок `X-Telegram-Bot-Api-Secret-Token`) и проверять на сервере — это защищает от подделки апдейтов.
+
+<InlineCTA>Подберём фреймворк и спроектируем стек</InlineCTA>
+
+## Тестирование
+
+Хороший фреймворк не мешает писать тесты. Подходы:
+
+- **aiogram** — `aiogram_tests` (community-пакет), либо ручное мокание `Bot` через `unittest.mock.AsyncMock` и сборка `Update` из словаря через `Update.model_validate(...)`.
+- **PTB** — `pytest-asyncio` + мокание `Application` и `context.bot`. Есть пример в репозитории.
+- **grammY** — `grammy-test` или собственный `Bot.handleUpdate(update)` с заранее собранным апдейтом.
+- **Telegraf** — обычно мокают `ctx` целиком (это плоский объект), вызывают handler напрямую.
+- **gotgbot** — горутины + интерфейсы, мокать через `gomock`.
+
+Общий паттерн для всех — вынести бизнес-логику из handler-ов в чистые функции/сервисы, тестировать их юнит-тестами, а handler-ы покрывать тонкими интеграционными.
+
+## Плагины и расширения
+
+**aiogram**: `aiogram-dialog` (визуальный конструктор диалогов), `aiogram-i18n` (локализация), `aiogram-broadcaster` (массовые рассылки с rate-limit), `aiogram-album` (склейка медиа-групп в один апдейт).
+
+**grammY**: официальные плагины `@grammyjs/menu`, `@grammyjs/conversations`, `@grammyjs/runner`, `@grammyjs/ratelimiter`, `@grammyjs/files`, `@grammyjs/i18n`, `@grammyjs/auto-retry`, `@grammyjs/storage-*` (Redis, Mongo, Supabase, Cloudflare KV).
+
+**Telegraf**: `telegraf-i18n`, `telegraf-session-redis`, `telegraf-ratelimit`. Меньше официальных плагинов, больше сторонних.
+
+**PTB**: встроены `JobQueue`, `Persistence`, `PicklePersistence`, `PostgresPersistence`. Для платежей и Stars — обычные методы Bot API напрямую.
+
+**gotgbot/teloxide**: экосистема плагинов меньше, чаще пишут утилиты под свой проект.
+
+Для платежей (Telegram Stars и обычные provider-payments) специальные плагины не нужны ни в одном фреймворке — все методы (`sendInvoice`, `answerPreCheckoutQuery`, `refundStarPayment`) есть в базовом Bot API и обёрнуты в каждом фреймворке.
+
+## Production-ready соображения
+
+Любой фреймворк нужно дополнить production-обвязкой. Универсальный чек-лист:
+
+1. **Graceful shutdown** — обработать SIGINT/SIGTERM, дождаться завершения текущих апдейтов, закрыть соединения с БД и Redis. В aiogram — `dp.stop_polling()`, в grammY — `bot.stop()`, в PTB — `app.stop()`, в gotgbot — `updater.Stop()`.
+2. **Retry на исходящих запросах** — Telegram временами отвечает 502/504. Для grammY есть `@grammyjs/auto-retry`, для aiogram retry чаще пишут самостоятельно через `tenacity`.
+3. **Rate limit на стороне бота** — Telegram ограничивает: 30 сообщений в секунду глобально, 1 в секунду в один чат, 20 в минуту в одну группу. Превышение даёт `429 Too Many Requests` с `retry_after`. Под массовые рассылки нужен очередь+воркер с собственным троттлингом.
+4. **Логи** — структурированные (`structlog`, `pino`, `zerolog`), с `correlation_id` на каждый апдейт. `update.update_id` отлично подходит как ключ.
+5. **Метрики** — Prometheus-эндпоинт с RPS, latency, ошибками. Все фреймворки позволяют повесить middleware на каждый апдейт.
+6. **Dead-letter** — апдейты, которые упали с исключением, сохранять в отдельную очередь/таблицу для повторного разбора. Иначе теряются жалобы пользователей.
+7. **Защита webhook** — `secret_token` в заголовке + ограничение исходящих IP Telegram (`149.154.160.0/20` и `91.108.4.0/22`).
+8. **Healthcheck** — отдельный HTTP-эндпоинт для k8s/docker, не путать с webhook-роутом.
+
+Ничего из этого нет в коробке ни у одного фреймворка — это всегда дописывается. Но хорошие фреймворки (aiogram, grammY) хотя бы не мешают: middleware-инфраструктура позволяет добавить логи, метрики и retry в одном месте.
+
+## Лицензии
+
+Большинство фреймворков под MIT или BSD — без вопросов идут в коммерческие проекты. GPL/LGPL встречается реже: pyTelegramBotAPI — GPL2, gotgbot — MIT. Перед использованием в закрытом продукте проверяйте лицензию каждой зависимости (`pip-licenses`, `license-checker`, `go-licenses`).
+
+Сами плагины часто живут в отдельных репозиториях — у них может быть другая лицензия. Особенно это касается community-плагинов для aiogram и Telegraf.
+
+## Что умерло или замедлилось
+
+- **aiogram 2** — официально не развивается. Если вы на 2.x, планируйте миграцию на 3 (структура роутеров, FSM, middleware изменились).
+- **node-telegram-bot-api** — жив, но обновляется редко, новые методы Bot API добавляются с задержкой.
+- **Telegraf-форки** (`telegraf-ts`, разные «улучшенные» ветки) — заброшены, берите только основной репозиторий.
+- **Старые ветки Nutgram** — берите свежую версию ≥4.
+
+Перед стартом нового проекта проверяйте репозиторий: дата последнего коммита, активность issue-трекера, релизы за последние 6 месяцев. Хорошие признаки — еженедельные коммиты и закрываемые issue.
+
+## Итого
+
+В 2026 году выбор фреймворка — это в первую очередь выбор языка и команды. Python — aiogram 3 для большинства, PTB для стабильных проектов с JobQueue. Node/TS — grammY. Go — gotgbot. Rust — teloxide. Все они полностью покрывают Bot API и подходят для production. Гораздо важнее качество архитектуры самого бота: разделение слоёв, FSM, тестирование, мониторинг, graceful shutdown — это даёт долгую жизнь проекту, а не марка фреймворка.
+
+Берите тот фреймворк, на котором команда напишет работающий бот за неделю, а не тот, который теоретически быстрее на 5%.
+
+<Faq>
+  <FaqItem q="Какой Python-фреймворк выбрать для Telegram-бота в 2026?">
+    Aiogram 3 — лидер по популярности. Релизы раз в 1–2 месяца, поддержка свежего Bot API в течение пары недель, Pydantic-объекты, FSM, роутеры, middleware, фильтры через объект F. Подходит для 95% проектов. Python-telegram-bot 21 — стабильный ветеран со встроенным JobQueue и ConversationHandler, берут команды с унаследованным PTB-кодом или те, кому важна стабильность API. PyTelegramBotAPI (telebot) — самая простая, для коротких ботов в 50–200 строк, поддерживает и sync, и async.
+  </FaqItem>
+  <FaqItem q="Что лучше для Node.js — grammY или Telegraf?">
+    GrammY — современный фреймворк со строгой типизацией, плагинами (menu, conversations, runner, ratelimiter, sessions), отличной документацией. Запускается на Node, Deno, Bun. Типы корректно сужаются по фильтрам, что убирает класс рантайм-ошибок. Telegraf — прежний стандарт, жив, но обновляется медленнее, типизация слабее. FSM — через scenes, императивно. Для нового проекта в 2026 берите grammY, для унаследованной кодовой базы Telegraf оставляйте.
+  </FaqItem>
+  <FaqItem q="Какие фреймворки для Go и Rust?">
+    Go: gotgbot/v2 — современный выбор, хорошо типизирован, поддерживает webhook и polling. Бот на 50 тысяч пользователей живёт в `<50 MB` RSS. FSM приходится писать самостоятельно. Также есть классический go-telegram-bot-api. Rust: teloxide — основной выбор, полностью типизирован, есть dialogue DSL для FSM, макросы для команд. Высокий порог входа, но получившийся бот работает как часы. Берите Go и Rust, когда критична латентность и ресурсы или у команды уже есть стек.
+  </FaqItem>
+  <FaqItem q="Как реализовать FSM в разных фреймворках?">
+    Aiogram — декларативные классы StatesGroup и FSMContext с MemoryStorage/RedisStorage/MongoStorage. GrammY — функциональные диалоги через плагин conversations с await conversation.wait(). Telegraf — Scenes/WizardScene с явными шагами. PTB — ConversationHandler с мапой состояние→handlers. Gotgbot и teloxide — обычно собственная FSM поверх Redis или БД, готового решения уровня aiogram нет. Хранилище всегда выносится наружу процесса, MemoryStorage теряет данные при рестарте.
+  </FaqItem>
+  <FaqItem q="Webhook или long-polling — что выбрать?">
+    Long-polling проще в разработке (не нужен внешний URL и SSL), подходит для маленьких ботов. Webhook быстрее в продакшене, лучше масштабируется горизонтально, экономит ресурсы. Все фреймворки поддерживают оба режима. При webhook обязательно настройте secret_token (Telegram добавит его в заголовок X-Telegram-Bot-Api-Secret-Token) и проверяйте на сервере — это защищает от подделки апдейтов. Дополнительно ограничьте входящие IP диапазонами Telegram.
+  </FaqItem>
+  <FaqItem q="Что нужно дописать поверх фреймворка для production?">
+    Универсальный чек-лист: graceful shutdown по SIGINT/SIGTERM, retry с экспоненциальной задержкой на исходящих запросах, собственный rate limit под лимиты Telegram (30 msg/sec глобально, 1/sec в чат, 20/min в группу), структурированные логи с correlation_id из update.update_id, Prometheus-метрики через middleware, dead-letter для упавших апдейтов, защита webhook через secret_token, отдельный healthcheck-эндпоинт. Ничего из этого нет в коробке, всё дописывается, но хорошие фреймворки не мешают.
+  </FaqItem>
+  <FaqItem q="По каким критериям выбирать фреймворк для бота?">
+    Стек команды — не берите Rust, если в команде нет Rust-разработчиков. Сложность бота — простой бот можно написать на чём угодно, сложный лучше на фреймворке с FSM, типами и middleware. Свежесть Bot API — для Business Bots, Stars, Mini Apps берите фреймворк, который быстро добавляет новые методы (aiogram 3, grammY). Будущая поддержка — смотрите дату последнего коммита, активность issue-трекера, релизы за 6 месяцев. Лицензии: большинство под MIT/BSD, gotgbot — MIT, pyTelegramBotAPI — GPL2, проверяйте перед использованием в закрытом продукте.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка в течение рабочего дня.
+</EndCTA>

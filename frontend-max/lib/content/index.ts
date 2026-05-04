@@ -2,7 +2,7 @@ import type { SiteContents } from "shared/components/MarketingHome";
 import { headerContent } from "./header";
 import { heroContent } from "./hero";
 import { servicesContent } from "./services";
-import { processContent } from "./process";
+import { casesContent } from "./cases";
 import { tariffsContent } from "./tariffs";
 import { whyUsContent } from "./whyUs";
 import { whyPlatformContent } from "./whyPlatform";
@@ -14,7 +14,7 @@ export const siteContents: SiteContents = {
   header: headerContent,
   hero: heroContent,
   services: servicesContent,
-  process: processContent,
+  cases: casesContent,
   whyUs: whyUsContent,
   tariffs: tariffsContent,
   whyPlatform: whyPlatformContent,

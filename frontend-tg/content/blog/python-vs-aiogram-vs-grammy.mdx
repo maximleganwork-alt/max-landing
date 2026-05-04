@@ -1,0 +1,389 @@
+---
+title: "python-telegram-bot vs aiogram vs grammY: сравнение фреймворков"
+description: "Чем отличаются три самых популярных фреймворка для Telegram-ботов: API, производительность, экосистема и подход к диспетчеризации."
+date: "2026-02-06"
+tags: ["Telegram", "разработка", "сравнение"]
+---
+
+Выбор фреймворка для Telegram-бота влияет на скорость разработки, тестируемость и поддержку проекта на годы вперёд. python-telegram-bot, aiogram и grammY — три самых живых проекта на 2026 год. Все три полностью покрывают Bot API, отличия — в архитектуре, типизации, экосистеме плагинов и подходе к роутингу. Ниже — детальное сравнение под реальные задачи: от простого FAQ-бота до сложной воронки с платежами, FSM и интеграцией с Mini App.
+
+Главный вывод заранее: «лучшего» фреймворка не существует. Есть удобный для конкретной команды и под конкретный сценарий. Если у вас Python-бэкенд и команда привыкла к asyncio — берите aiogram. Если уже есть Node-стек и Mini App на Next.js — grammY. Если важна максимальная стабильность API и большое сообщество — PTB. Дальше — детально по каждому, с кодом и таблицами.
+
+## Языки, runtime и экосистема
+
+`python-telegram-bot` (далее PTB) и `aiogram` живут в Python-экосистеме. Установка через pip, зависимости через `requirements.txt` или `pyproject.toml`, типизация — через стандартный `typing` (PTB) или Pydantic (aiogram). Минимальная версия Python — 3.9 для PTB и 3.10 для aiogram 3.
+
+`grammY` живёт в JavaScript-экосистеме: Node.js 18+, Deno, Bun. Устанавливается через npm/pnpm/yarn/bun. Типизация на TypeScript — настолько глубокая, что без TS работать с grammY теряет смысл: половина DX упирается в автодополнение типов от `Context`.
+
+С точки зрения runtime: PTB и aiogram — `asyncio` поверх CPython. grammY — V8 (Node), JavaScriptCore (Bun) или Deno-runtime. Бенчмарки echo-бота показывают, что Bun обгоняет CPython в 2-3 раза, но в реальных ботах разница нивелируется ожиданием Bot API и БД.
+
+## DX и стиль API
+
+Три фреймворка предлагают принципиально разные стили описания хэндлеров.
+
+PTB — императивный: создаёте `Application`, регистрируете `Handler`-объекты руками.
+
+```python
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет!")
+
+app = Application.builder().token("TOKEN").build()
+app.add_handler(CommandHandler("start", start))
+app.run_polling()
+```
+
+aiogram 3 — декораторы и роутеры в стиле FastAPI:
+
+```python
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.filters import CommandStart
+from aiogram.types import Message, CallbackQuery
+
+router = Router()
+
+@router.message(CommandStart())
+async def start(message: Message):
+    await message.answer("Привет!")
+
+@router.callback_query(F.data == "ping")
+async def ping(call: CallbackQuery):
+    await call.answer("pong")
+
+dp = Dispatcher()
+dp.include_router(router)
+```
+
+grammY — middleware-pipeline в духе koa/express:
+
+```typescript
+import { Bot, Composer } from "grammy";
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+const composer = new Composer();
+
+composer.command("start", (ctx) => ctx.reply("Привет!"));
+composer.callbackQuery("ping", (ctx) => ctx.answerCallbackQuery("pong"));
+
+bot.use(composer);
+bot.start();
+```
+
+Декораторы aiogram читаются проще для тех, кто привык к FastAPI/Flask. Middleware-стиль grammY — гибче: легко вставлять промежуточные слои в любой точке. PTB занимает середину: явная регистрация даёт контроль, но многословна.
+
+## Роутинг и композиция
+
+В PTB всё крутится вокруг `Application` и `Handler`. Группы хэндлеров (`group=N`) — единственный способ упорядочить обработку. Вложенных роутеров нет; разделение по файлам делается руками — собираете список хэндлеров и регистрируете через `add_handler`.
+
+aiogram 3 ввёл `Router` — иерархическая композиция в духе FastAPI:
+
+```python
+from aiogram import Router
+
+admin_router = Router()
+user_router = Router()
+
+@admin_router.message(F.from_user.id.in_({111, 222}))
+async def admin_only(message: Message):
+    await message.answer("Привет, админ")
+
+@user_router.message()
+async def echo(message: Message):
+    await message.answer(message.text)
+
+main_router = Router()
+main_router.include_router(admin_router)
+main_router.include_router(user_router)
+```
+
+grammY использует `Composer` — каждый Composer это middleware-стек, и `bot` сам по себе тоже Composer. Композиция тривиальна:
+
+```typescript
+import { Composer } from "grammy";
+
+const admin = new Composer();
+admin.use((ctx, next) => {
+  if (ctx.from?.id !== 111) return;
+  return next();
+});
+admin.command("ban", (ctx) => ctx.reply("забанено"));
+
+const user = new Composer();
+user.on("message:text", (ctx) => ctx.reply(ctx.message.text));
+
+bot.use(admin);
+bot.use(user);
+```
+
+Для крупных ботов (50+ хэндлеров) роутинг aiogram и Composer-цепочки grammY дают ощутимо более чистый код, чем плоская регистрация PTB.
+
+## FSM и сценарии
+
+FSM (finite state machine) — обязательный инструмент для воронок: «введи имя → введи телефон → выбери услугу → подтверди». Все три фреймворка поддерживают FSM, но по-разному.
+
+PTB предлагает `ConversationHandler` — мощный, но многословный:
+
+```python
+from telegram.ext import ConversationHandler, MessageHandler, filters
+
+NAME, PHONE = range(2)
+
+async def ask_name(update, context):
+    await update.message.reply_text("Имя?")
+    return NAME
+
+async def got_name(update, context):
+    context.user_data["name"] = update.message.text
+    await update.message.reply_text("Телефон?")
+    return PHONE
+
+async def got_phone(update, context):
+    context.user_data["phone"] = update.message.text
+    await update.message.reply_text(f"Спасибо, {context.user_data['name']}")
+    return ConversationHandler.END
+
+conv = ConversationHandler(
+    entry_points=[CommandHandler("order", ask_name)],
+    states={
+        NAME: [MessageHandler(filters.TEXT, got_name)],
+        PHONE: [MessageHandler(filters.TEXT, got_phone)],
+    },
+    fallbacks=[],
+)
+app.add_handler(conv)
+```
+
+aiogram 3 — `StatesGroup` и `FSMContext`:
+
+```python
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+
+class Order(StatesGroup):
+    name = State()
+    phone = State()
+
+@router.message(CommandStart())
+async def start_order(message: Message, state: FSMContext):
+    await state.set_state(Order.name)
+    await message.answer("Имя?")
+
+@router.message(Order.name)
+async def got_name(message: Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await state.set_state(Order.phone)
+    await message.answer("Телефон?")
+
+@router.message(Order.phone)
+async def got_phone(message: Message, state: FSMContext):
+    data = await state.update_data(phone=message.text)
+    await state.clear()
+    await message.answer(f"Спасибо, {data['name']}")
+```
+
+grammY — плагин `@grammyjs/conversations`. Это лучший FSM в классе, потому что код выглядит синхронным:
+
+```typescript
+import { conversations, createConversation } from "@grammyjs/conversations";
+
+async function order(conversation, ctx) {
+  await ctx.reply("Имя?");
+  const { message: nameMsg } = await conversation.waitFor("message:text");
+  await ctx.reply("Телефон?");
+  const { message: phoneMsg } = await conversation.waitFor("message:text");
+  await ctx.reply(`Спасибо, ${nameMsg.text}`);
+}
+
+bot.use(conversations());
+bot.use(createConversation(order));
+bot.command("order", (ctx) => ctx.conversation.enter("order"));
+```
+
+Состояние сохраняется автоматически: библиотека делает `await` непрозрачным — диалог приостанавливается до следующего обновления, потом возобновляется. Для длинных ветвящихся воронок это разница между «писать FSM-схему» и «писать обычный код».
+
+<InlineCTA>Спроектируем сценарий и FSM</InlineCTA>
+
+## Middleware и фильтры
+
+PTB: middleware как такового нет. Есть `TypeHandler`, который можно поставить в группу с меньшим приоритетом, и есть `error_handler`. Throttling, логирование, авторизацию — пишете руками.
+
+aiogram 3: middleware на уровне диспетчера, роутера и observer-ов:
+
+```python
+from aiogram import BaseMiddleware
+from typing import Any, Callable, Awaitable, Dict
+
+class LoggingMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        print(f"-> {event.text if hasattr(event, 'text') else event}")
+        return await handler(event, data)
+
+router.message.middleware(LoggingMiddleware())
+```
+
+Фильтры aiogram — через магический `F` или классы:
+
+```python
+@router.message(F.text.regexp(r"^\d{10,11}$"))
+async def phone_handler(message: Message):
+    await message.answer("Похоже на телефон")
+```
+
+grammY: middleware — это вся архитектура. Любой `bot.use(...)` — middleware. Throttling и flood-protection — плагины:
+
+```typescript
+import { run } from "@grammyjs/runner";
+import { apiThrottler } from "@grammyjs/transformer-throttler";
+
+bot.api.config.use(apiThrottler());
+bot.use(async (ctx, next) => {
+  console.time("handler");
+  await next();
+  console.timeEnd("handler");
+});
+
+run(bot);
+```
+
+По удобству: aiogram и grammY на голову выше PTB. У grammY ещё и встроенный `runner` для concurrent webhook processing.
+
+## Платежи, файлы, inline mode, scheduler
+
+| Возможность | PTB | aiogram 3 | grammY |
+|---|---|---|---|
+| Telegram Stars / XTR | да | да | да |
+| Pre-checkout | да | да | да |
+| File upload (`InputFile`) | да | да | да |
+| Inline mode | да | да | да |
+| Webhook | да (`run_webhook`) | да (`aiohttp`/`fastapi`) | да (`webhookCallback`) |
+| Scheduler из коробки | `JobQueue` | нет (apscheduler) | нет (плагин или внешнее) |
+| Long polling | да | да | да (через runner) |
+
+`JobQueue` в PTB — единственный встроенный планировщик. В aiogram и grammY стандарт — внешние библиотеки (`apscheduler` для Python, `node-cron` для Node). На практике это не минус: планировщик обычно живёт отдельным сервисом.
+
+## Тестирование
+
+Telegram-боты сложно тестировать end-to-end, потому что нужен живой Bot API. Все три фреймворка поощряют unit-тесты на хэндлерах с моком `Bot`/`Context`.
+
+aiogram даёт `MockedBot` через сторонний `aiogram-tests`:
+
+```python
+from aiogram_tests import MockedBot
+from aiogram_tests.handler import RequestHandler
+from aiogram_tests.types.dataset import MESSAGE
+
+async def test_start():
+    requester = RequestHandler(request_handler=start, dp=dp)
+    calls = await requester.query(MESSAGE.as_object(text="/start"))
+    answer = calls.send_message.fetchone()
+    assert answer.text == "Привет!"
+```
+
+grammY поставляет официальный тест-кит — проще:
+
+```typescript
+import { Bot } from "grammy";
+
+const bot = new Bot("dummy");
+bot.command("start", (ctx) => ctx.reply("Привет!"));
+
+await bot.handleUpdate({
+  update_id: 1,
+  message: { /* fake message object */ } as any,
+});
+```
+
+PTB тестируется через `pytest-asyncio` и ручной мок `Update`/`Context`. Готовых хелперов меньше.
+
+## Документация и сообщество
+
+- **PTB**: GitHub stars 25k+, релизы раз в 1-2 месяца, активный список рассылки. Документация — readthedocs, исчерпывающая, с tutorial.
+- **aiogram**: 5k+ stars, очень активный Telegram-чат на русском, релизы регулярно. Дока — docs.aiogram.dev, на английском, но есть кириллические туториалы в комьюнити.
+- **grammY**: 5k+ stars, документация — grammy.dev, многоязычная (включая русский раздел), отличные примеры под каждый плагин. Самое аккуратное оформление из трёх.
+
+По числу Stack Overflow ответов лидер — PTB. По активности комьюнити в РФ — aiogram. По качеству официальной документации — grammY.
+
+## Стабильность API и breaking changes
+
+PTB славится стабильностью: миграция между мажорными версиями болезненна (особенно 13 → 20 на asyncio), но внутри мажора API почти не меняется. Релизы 21.x обратно совместимы.
+
+aiogram пережил болезненный 2 → 3: переписан с нуля, поменялся синтаксис, FSM, фильтры. Сейчас 3.x стабилен, но проектов на aiogram 2 ещё много. Внутри 3.x — минимальные изменения.
+
+grammY развивается быстрее: 1.x → 2.x не было, всё в рамках мажора. Плагины обновляются часто, но breaking changes сопровождаются гайдами миграции и codemod-ами.
+
+## Производительность
+
+Синтетический echo-бот, одно ядро, без БД, webhook режим:
+
+| Фреймворк | RPS (echo) | Latency p99 |
+|---|---|---|
+| PTB 21 + uvicorn | 3000-5000 | 8 мс |
+| aiogram 3 + uvloop | 4000-6000 | 6 мс |
+| grammY + Node 20 | 6000-9000 | 4 мс |
+| grammY + Bun 1.x | 8000-12000 | 3 мс |
+
+В реальной жизни узкое место — БД, внешние API, очереди. Любой из трёх легко тянет 100-500 RPS, чего хватает 99% проектов. Считать «фреймворк лимитирует» можно только при 5k+ RPS на инстанс.
+
+<InlineCTA>Поможем выбрать стек под нагрузку</InlineCTA>
+
+## Зрелость в продакшене и типичные грабли
+
+PTB:
+- `JobQueue` живёт в одном процессе — при горизонтальном масштабировании задачи не перенесутся, нужен внешний планировщик.
+- `context.user_data` хранится в памяти по умолчанию — нужен `PicklePersistence` или внешнее хранилище.
+
+aiogram:
+- FSM-storage по умолчанию `MemoryStorage` — теряется при рестарте; в проде нужен Redis или Mongo.
+- Middleware регистрируется на конкретный observer (message, callback_query) — легко забыть про один.
+- `Bot(session=...)` нужно явно закрывать в shutdown, иначе утечка соединений.
+
+grammY:
+- Без `@grammyjs/runner` обработка webhook-ов последовательная — на крупном боте без runner деградация.
+- Сессии (`session()` middleware) по умолчанию in-memory — те же грабли, что у aiogram.
+- Conversations требуют чистых функций (без побочных эффектов вне `await ctx.*`), иначе при возобновлении логика ломается.
+
+## Когда что выбирать
+
+| Сценарий | Рекомендация |
+|---|---|
+| Простой бот, команда уже знает PTB | PTB |
+| Воронка с FSM, команда на Python | aiogram 3 |
+| Бот + Mini App в одной кодовой базе | grammY (TS на фронте и беке) |
+| Высокая нагрузка (5k+ RPS) | grammY на Bun |
+| Корпоративный проект, важна стабильность | PTB или aiogram 3 |
+| Open-source бот с долгой поддержкой | aiogram 3 (большое RU-комьюнити) |
+| Bot API на самом краю (новые фичи в день релиза) | grammY |
+
+## Итого
+
+PTB — стабильность, наследие и встроенный JobQueue. aiogram 3 — лучший Python-DSL, удобная FSM, активное русскоязычное сообщество. grammY — TypeScript, скорость, чистая архитектура и conversations-плагин, переворачивающий FSM. Принципиальной разницы по покрытию Bot API нет; разница — в стиле, типизации, экосистеме плагинов и зрелости документации. Выбирайте под стек команды и сложность сценариев, а не под маркетинг — все три дотащат проект до production.
+
+<Faq>
+  <FaqItem q="Чем отличается python-telegram-bot от aiogram 3?">
+    PTB — императивный API, хэндлеры регистрируются через application.add_handler, middleware-системы как таковой нет, фильтры — отдельные классы. Сильные стороны: огромное количество примеров и Stack Overflow ответов, стабильное API с минимумом breaking changes между мажорными версиями, встроенный JobQueue — планировщик задач без внешних зависимостей. aiogram 3 — декораторы в стиле FastAPI, роутеры с иерархической композицией, FSM из коробки через StatesGroup и FSMContext, удобные middleware на уровне диспетчера и роутера, фильтры через магический объект F. PTB подходит, когда команда уже знает его и важна стабильность; для нового проекта чаще выбирают aiogram 3.
+  </FaqItem>
+  <FaqItem q="Почему aiogram 3 популярен у русскоязычных разработчиков?">
+    aiogram — самый популярный фреймворк у русскоязычных разработчиков. Версия 3 переписана с нуля, использует Pydantic для типов, FSM из коробки, роутеры в стиле FastAPI. Декораторы router.message(F.text == /start) — компактно. Filter через магический объект F — выразительно (F.photo, F.text.regexp). FSMContext встроен в любой хэндлер. Хорошая интеграция с Pydantic — все объекты типизированы. Удобные middleware на уровне диспетчера, роутера и observer-ов. Минусы: breaking changes между 2 и 3, меньше готовых решений на английском Stack Overflow, иногда обновления Bot API доезжают чуть позже, чем у grammY. В РФ — стандартный выбор для новых ботов.
+  </FaqItem>
+  <FaqItem q="Когда выбирать grammY вместо aiogram или PTB?">
+    grammY — молодой фреймворк на TypeScript для Node, Deno, Bun. Подходит, если фронт на TypeScript или хочется одной кодовой базой закрыть и бот, и Mini App, и бэкенд. Сильные стороны: современная типизация — все объекты Telegram строго типизированы, IDE подсказывает каждое поле; плагины (menu, conversations, runner, storage) с понятным API; быстрый рантайм, особенно на Bun (в 2-3 раза быстрее Python); удобный middleware-стиль в духе koa/express; активная многоязычная документация на grammy.dev. Слабые места: TypeScript обязателен, меньше русскоязычных туториалов, некоторые продвинутые сценарии требуют дополнительных плагинов. Лучший выбор для проектов с Mini App и для команд на Node.
+  </FaqItem>
+  <FaqItem q="Какой фреймворк быстрее в бенчмарках?">
+    Синтетический echo-бот, одно ядро, webhook режим: PTB 21 на uvicorn — 3000-5000 RPS; aiogram 3 на uvloop — 4000-6000 RPS; grammY на Node 20 — 6000-9000 RPS; grammY на Bun — 8000-12000 RPS. В реальной жизни узким местом почти никогда не будет фреймворк. Ботам мешают БД, внешние API, очереди. Любой из трёх легко тянет 100-500 RPS, что достаточно для подавляющего большинства проектов. Выбирать фреймворк по бенчмаркам — преждевременная оптимизация: при росте до 10k RPS у вас будут другие проблемы (БД, очереди), а не фреймворк. Считать фреймворк ограничивающим можно только при 5k+ RPS на инстанс.
+  </FaqItem>
+  <FaqItem q="Как FSM реализован в каждом из фреймворков?">
+    PTB: ConversationHandler — мощный, но многословный. Хорошо подходит для линейных сценариев, плохо для ветвящихся — при 5+ состояниях код становится тяжёлым. aiogram 3: StatesGroup + FSMContext + middleware-провайдеры состояния (Redis, MongoDB, Memory) — понятно с первого раза, FSM-context доступен в любом хэндлере как параметр. grammY: плагин conversations — лучший в классе, потому что позволяет писать код «как в синхронном стиле»: await conversation.waitFor(message:text), await conversation.ask. Состояние сохраняется автоматически — библиотека приостанавливает выполнение до следующего обновления. Для длинных воронок grammY conversations выигрывает у обоих Python-фреймворков по DX.
+  </FaqItem>
+  <FaqItem q="Что насчёт middleware и фильтров?">
+    PTB: middleware как такового нет. Throttling, логирование, авторизацию приходится писать руками через TypeHandler в группе с меньшим приоритетом и error_handler. aiogram 3: middleware на уровне диспетчера, роутера и observer-ов; фильтры через магический F или классы (F.text.regexp, F.photo, F.from_user.id.in_). grammY: middleware — основа архитектуры, любой bot.use это middleware; throttling и flood-protection — отдельные плагины (apiThrottler, transformer-throttler); встроенный runner для concurrent webhook processing. По удобству aiogram и grammY на голову выше PTB.
+  </FaqItem>
+  <FaqItem q="Как выбрать фреймворк под свой Telegram-бот?">
+    Простое правило по стеку команды и задаче. Команда на Python, нужен максимально стабильный фреймворк без сюрпризов и встроенный JobQueue — PTB. Команда на Python, нужен современный API, FSM и активное RU-сообщество — aiogram 3. Команда на TypeScript, Node, Deno или Bun, ставка на Mini App или единая кодовая база — grammY. По нагрузке: до 1k RPS — любой; 5k+ RPS — grammY на Bun. Если бот единичный и простой, можно вообще обойтись HTTP-сервером и ручными вызовами Bot API. Но как только появляются 10+ хэндлеров и FSM, фреймворк экономит десятки часов разработки и сопровождения.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка в течение рабочего дня.
+</EndCTA>

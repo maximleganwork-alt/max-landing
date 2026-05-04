@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import type { ReactNode } from "react";
-import { motion, useReducedMotion } from "framer-motion";
+import { m, useReducedMotion } from "framer-motion";
 import { ArrowRight } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { CountUp } from "../../components/ui/CountUp";
@@ -54,7 +54,7 @@ export function Hero({
             : "container-narrow"
         }
       >
-        <motion.div
+        <m.div
           initial="hidden"
           animate="visible"
           variants={{
@@ -79,7 +79,7 @@ export function Hero({
             {description}
           </p>
 
-          <motion.div
+          <m.div
             variants={{
               hidden: { opacity: 0, y: reduced ? 0 : 16 },
               visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } },
@@ -96,9 +96,9 @@ export function Hero({
             <Button onClick={handleSecondary} size="lg" variant="outline">
               {secondaryCta}
             </Button>
-          </motion.div>
+          </m.div>
 
-          <motion.dl
+          <m.dl
             variants={{
               hidden: { opacity: 0, y: reduced ? 0 : 16 },
               visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } },
@@ -117,8 +117,8 @@ export function Hero({
                 <dt className="mt-1 text-caption text-fg-muted">{s.label}</dt>
               </div>
             ))}
-          </motion.dl>
-        </motion.div>
+          </m.dl>
+        </m.div>
 
         {visual ? (
           <div className="relative hidden items-center justify-center lg:flex">

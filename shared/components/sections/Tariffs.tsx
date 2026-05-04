@@ -8,7 +8,7 @@ import { reachGoal } from "../../lib/analytics";
 import { cn, smoothScrollTo } from "../../lib/utils";
 import type { TariffPlan, TariffsContent } from "../../lib/content/tariffs";
 
-export function Tariffs({ title, lead, plans, footnote }: TariffsContent) {
+export function Tariffs({ title, plans, footnote }: TariffsContent) {
   const handleSelect = (tariff: TariffPlan) => {
     reachGoal(tariff.goal);
     if (typeof window !== "undefined") {
@@ -23,7 +23,7 @@ export function Tariffs({ title, lead, plans, footnote }: TariffsContent) {
     <section id="tariffs" aria-labelledby="tariffs-heading" className="section-padding">
       <div className="container-narrow">
         <AnimateIn>
-          <SectionHeading titleId="tariffs-heading" title={title} lead={lead} />
+          <SectionHeading titleId="tariffs-heading" title={title} />
         </AnimateIn>
 
         <Stagger className="mt-8 sm:mt-12 grid grid-cols-1 gap-6 md:grid-cols-3">

@@ -61,6 +61,16 @@
     @apply bg-bg text-fg font-sans antialiased;
     font-feature-settings: "ss01", "cv11";
     text-rendering: optimizeLegibility;
+    /* Sticky footer: на коротких страницах (например, "ничего не нашли"
+       в блоге) main растягивается, чтобы прижать footer к низу. */
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  main {
+    flex: 1 0 auto;
   }
 
   ::selection {

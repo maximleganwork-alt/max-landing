@@ -1,4 +1,6 @@
-Заменить заглушки domain (`*.example.ru`) и MAX-аккаунт (`@botmax_studio`) перед запуском. Brand = «Legan Studio», legalEntity = ИП Леган М. А., contactEmail = legan-studio@yandex.com — реальные.
-Подать уведомление в реестр операторов ПДн (pd.rkn.gov.ru, ст. 22 152-ФЗ).
-Подать отдельное уведомление о трансграничной передаче в Telegram.
-Архитектурно: добавить локальное хранилище ПДн на сервере в РФ (242-ФЗ) — обсудим на этапе деплоя.
+yandex metrica
+- sitemap.xml
+- robots.txt
+- корректные title / description
+- микроразметка (Schema.org)
+- Open Graph (для соцсетей)

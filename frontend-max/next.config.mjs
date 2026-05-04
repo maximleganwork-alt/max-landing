@@ -21,6 +21,12 @@ const nextConfig = {
   images: {
     formats: ["image/avif", "image/webp"],
   },
+  // lucide-react is auto-optimized by Next 15+. framer-motion isn't on the
+  // default list, so we hint it manually — Next rewrites barrel imports into
+  // direct module imports for better tree-shaking.
+  experimental: {
+    optimizePackageImports: ["framer-motion"],
+  },
   async headers() {
     return [
       {

@@ -27,8 +27,36 @@ export interface JsonLdSiteInfo {
   areaServed?: string[];
 }
 
+export interface JsonLdBlogPosting {
+  /** URL поста относительно `siteUrl` — обычно `/blog/<slug>`. */
+  url: string;
+  title: string;
+  description: string;
+  /** ISO-дата публикации. */
+  datePublished: string;
+  /** ISO-дата обновления (опционально). */
+  dateModified?: string;
+  /** Теги поста — попадают в `keywords`. */
+  keywords?: string[];
+  /** URL изображения для `image` (обычно динамический OG). */
+  imageUrl?: string;
+  /** Слов в теле — для schema.org `wordCount`. */
+  wordCount?: number;
+  /** Время чтения в минутах ISO-8601 PT?M (например `PT5M`). */
+  timeRequired?: string;
+  /** Q&A-пары для FAQPage (если в посте есть `<Faq>`). */
+  faqItems?: { q: string; a: string }[];
+}
+
+export interface JsonLdBlogListItem {
+  url: string;
+  title: string;
+  description: string;
+  datePublished: string;
+}
+
 interface JsonLdProps {
-  variant?: "home" | "legal";
+  variant?: "home" | "legal" | "blog" | "blogPosting";
   breadcrumbs?: { name: string; url: string }[];
   site: JsonLdSiteInfo;
   /** Tariff plans surfaced as Service offers + an OfferCatalog. */
@@ -39,6 +67,10 @@ interface JsonLdProps {
   pageDescription?: string;
   /** Specialised legal-document marker for /privacy, /consent and /offer. */
   legalDocumentType?: "PrivacyPolicy" | "DigitalDocument" | "TermsOfService";
+  /** Single post — for `variant: "blogPosting"`. */
+  blogPosting?: JsonLdBlogPosting;
+  /** Listing items — for `variant: "blog"` (Blog + ItemList). */
+  blogListing?: { url: string; items: JsonLdBlogListItem[] };
 }
 
 const SCHEMA = "https://schema.org";
@@ -61,6 +93,8 @@ export function JsonLd({
   pageName,
   pageDescription,
   legalDocumentType,
+  blogPosting,
+  blogListing,
 }: JsonLdProps) {
   const siteUrl = site.siteUrl.replace(/\/+$/, "");
   const homeUrl = `${siteUrl}/`;
@@ -213,6 +247,84 @@ export function JsonLd({
         item: b.url,
       })),
     });
+  }
+
+  if (variant === "blog" && blogListing) {
+    const blogUrl = blogListing.url.startsWith("http")
+      ? blogListing.url
+      : `${siteUrl}${blogListing.url}`;
+    graph.push({
+      "@type": "Blog",
+      "@id": `${blogUrl}#blog`,
+      url: blogUrl,
+      name: pageName ?? `Блог ${site.brand}`,
+      description: pageDescription ?? site.description,
+      inLanguage: "ru-RU",
+      publisher: { "@id": orgId },
+      blogPost: blogListing.items.map((p) => ({
+        "@type": "BlogPosting",
+        headline: p.title,
+        description: p.description,
+        url: p.url.startsWith("http") ? p.url : `${siteUrl}${p.url}`,
+        datePublished: p.datePublished,
+      })),
+    });
+
+    graph.push({
+      "@type": "ItemList",
+      itemListElement: blogListing.items.map((p, i) => ({
+        "@type": "ListItem",
+        position: i + 1,
+        url: p.url.startsWith("http") ? p.url : `${siteUrl}${p.url}`,
+        name: p.title,
+      })),
+    });
+  }
+
+  if (variant === "blogPosting" && blogPosting) {
+    const postUrl = blogPosting.url.startsWith("http")
+      ? blogPosting.url
+      : `${siteUrl}${blogPosting.url}`;
+    const imageUrl = blogPosting.imageUrl ?? logoUrl;
+    graph.push({
+      "@type": "BlogPosting",
+      "@id": `${postUrl}#post`,
+      mainEntityOfPage: { "@type": "WebPage", "@id": postUrl },
+      url: postUrl,
+      headline: blogPosting.title,
+      description: blogPosting.description,
+      datePublished: blogPosting.datePublished,
+      dateModified: blogPosting.dateModified ?? blogPosting.datePublished,
+      inLanguage: "ru-RU",
+      author: { "@id": orgId },
+      publisher: { "@id": orgId },
+      image: { "@type": "ImageObject", url: imageUrl, width: 1200, height: 630 },
+      ...(blogPosting.keywords && blogPosting.keywords.length
+        ? { keywords: blogPosting.keywords.join(", ") }
+        : {}),
+      ...(blogPosting.wordCount ? { wordCount: blogPosting.wordCount } : {}),
+      ...(blogPosting.timeRequired ? { timeRequired: blogPosting.timeRequired } : {}),
+      // Speakable — приоритет для голосовых ассистентов и AI-поиска (Yandex
+      // Neuro, Google AI Overviews зачитывают эти фрагменты целиком).
+      // Селекторы привязаны к классам в `BlogPost.tsx`.
+      speakable: {
+        "@type": "SpeakableSpecification",
+        cssSelector: [".blog-speakable-headline", ".blog-speakable-summary"],
+      },
+      isPartOf: { "@id": websiteId },
+    });
+
+    if (blogPosting.faqItems && blogPosting.faqItems.length > 0) {
+      graph.push({
+        "@type": "FAQPage",
+        "@id": `${postUrl}#faq`,
+        mainEntity: blogPosting.faqItems.map((item) => ({
+          "@type": "Question",
+          name: item.q,
+          acceptedAnswer: { "@type": "Answer", text: item.a },
+        })),
+      });
+    }
   }
 
   if (variant === "legal" && legalDocumentType && breadcrumbs && breadcrumbs.length > 0) {

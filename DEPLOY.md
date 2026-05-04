@@ -16,24 +16,25 @@ The whole stack fits comfortably on a 2 GB RAM / 1 vCPU VPS once the swap and No
    public DNS           │   nginx (host pkg)                                   │
    max.example.ru ─────►│     ├─ max.example.ru → 127.0.0.1:3001              │
    tg.example.ru  ─────►│     ├─ tg.example.ru  → 127.0.0.1:3002              │
-   web.example.ru ─────►│     └─ web.example.ru → 127.0.0.1:3003              │
+   web.example.ru ─────►│     ├─ web.example.ru → 127.0.0.1:3003              │
+   api.example.ru ─────►│     └─ api.example.ru → 127.0.0.1:8080              │
                         │                                                      │
                         │   ┌─────── docker network: botmax ─────────┐         │
                         │   │  frontend-max  :3000 → :3001  (loopback) │       │
                         │   │  frontend-tg   :3000 → :3002  (loopback) │       │
                         │   │  frontend-web  :3000 → :3003  (loopback) │       │
-                        │   │  backend       :8080  (internal only)    │       │
+                        │   │  backend       :8080 → :8080  (loopback) │       │
                         │   └─────────────────────────────────────────┘        │
                         └──────────────────────────────────────────────────────┘
 ```
 
-**Why nginx on host, not in Docker:** simpler `certbot --nginx` automation. The four app services live in Docker; nginx terminates SSL on the host and proxies to `127.0.0.1:300{1,2,3}`. Backend has **no** public port — only the frontends reach it via the docker network as `http://backend:8080`.
+**Why nginx on host, not in Docker:** simpler `certbot --nginx` automation. The four app services live in Docker; nginx terminates SSL on the host and proxies to `127.0.0.1:300{1,2,3}` (frontends) and `127.0.0.1:8080` (backend). Frontends call the backend as `http://backend:8080` over the docker network — `api.example.ru` exists for external clients (curl, uptime checks, third-party integrations); browser traffic still goes through each frontend's `/api/lead` proxy.
 
 ---
 
 ## Prerequisites
 
-- **DNS** for the three subdomains (e.g. `max.example.ru`, `tg.example.ru`, `web.example.ru`) all pointing A/AAAA to your server's public IP. Wait for propagation before running certbot.
+- **DNS** for the four subdomains (e.g. `max.example.ru`, `tg.example.ru`, `web.example.ru`, `api.example.ru`) all pointing A/AAAA to your server's public IP. Wait for propagation before running certbot.
 - **SSH** access as a sudo-capable non-root user.
 - **Telegram bot + chat id** if you want lead notifications (optional — without them the backend logs leads to stdout and still returns 200).
 - **Yandex SmartCaptcha** key pair (optional — without `SMARTCAPTCHA_SERVER_KEY` the backend skips captcha verification).
@@ -98,7 +99,7 @@ docker compose ps
 curl -fsS http://127.0.0.1:3001/ | head -1   # frontend-max
 curl -fsS http://127.0.0.1:3002/ | head -1   # frontend-tg
 curl -fsS http://127.0.0.1:3003/ | head -1   # frontend-web
-docker exec botmax-backend wget -qO- http://127.0.0.1:8080/api/health
+curl -fsS http://127.0.0.1:8080/api/health   # backend (now bound on host loopback)
 ```
 
 ### 5. Wire up nginx (HTTP first)
@@ -128,6 +129,7 @@ sudo certbot --nginx \
   -d max.YOUR-DOMAIN.ru \
   -d tg.YOUR-DOMAIN.ru \
   -d web.YOUR-DOMAIN.ru \
+  -d api.YOUR-DOMAIN.ru \
   --agree-tos --redirect -m you@yourmail.ru
 ```
 
@@ -139,7 +141,9 @@ certbot will edit `botmax.conf` in place: the `:80` blocks become 301 redirects,
 curl -I https://max.YOUR-DOMAIN.ru
 curl -I https://tg.YOUR-DOMAIN.ru
 curl -I https://web.YOUR-DOMAIN.ru
-# expect HTTP/2 200, valid TLS, content-type: text/html
+curl -fsS https://api.YOUR-DOMAIN.ru/api/health
+# expect HTTP/2 200, valid TLS, content-type: text/html on the three frontends;
+# `ok` (or HTTP 200) on the api endpoint.
 ```
 
 Open each subdomain in a browser, submit the lead form once on each. The Telegram chat should receive three messages with the right `🟣 MAX` / `🔵 TG` / `🟢 WEB` markers.

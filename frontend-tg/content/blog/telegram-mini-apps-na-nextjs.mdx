@@ -1,0 +1,571 @@
+---
+title: "Telegram Mini Apps на Next.js: гайд по разработке"
+description: "Разбираем, как разрабатывать Telegram Mini Apps на Next.js: SDK, верификация initData, тема, MainButton, деплой на Vercel и подводные камни."
+date: "2025-10-03"
+tags: ["Telegram", "Mini Apps", "разработка", "Next.js"]
+---
+
+Next.js — самый популярный стек для Telegram Mini Apps в 2026 году: серверный рендеринг, edge-функции, удобный роутинг и быстрый деплой. Но Mini App — это не «обычный сайт», у него есть своя SDK, тема, кнопки и серверная верификация `initData`. Разберём, как собирается продакшн-приложение шаг за шагом — от структуры проекта до деплоя и подводных камней iOS-клавиатуры.
+
+## Стек в 2026: Next.js 15 + React 19 + Telegram WebApp SDK
+
+Почему именно Next.js, а не голый Vite:
+
+- **SSR/SSG для холодного старта.** Mini App открывается во встроенном WebView — каждая лишняя секунда до first paint увеличивает отказ. Pre-rendered HTML отдаётся мгновенно, гидратация догоняет.
+- **App Router и React Server Components.** Можно держать тяжёлую логику (фетчи, шаблоны писем, формирование чеков) на сервере и слать в WebView только мелкие клиентские островки.
+- **Edge Runtime для verify-эндпоинта.** HMAC-проверка `initData` укладывается в edge-функцию: 10–30 мс P50 в любом регионе мира.
+- **Зрелая экосистема.** `next/image`, `next/font`, middleware, instrumentation, готовые рецепты под Vercel, Cloudflare и self-hosted Docker.
+
+Альтернативы и когда они уместны:
+
+| Стек | Когда брать | Минусы |
+| --- | --- | --- |
+| Vite + React | мини-проект 1–2 экрана, нужна простота | нет SSR, ручной CSP, нет edge |
+| Remix / React Router 7 | команда уже на Remix | меньше материалов под Mini Apps |
+| SvelteKit | предпочтение Svelte | мало готовых TG-обёрток |
+| Nuxt 3 | команда на Vue | те же сложности, что у Remix |
+
+Для 80% коммерческих Mini App рациональный выбор — Next.js 15 + React 19 + TypeScript 5.
+
+## Базовая структура проекта (App Router)
+
+```
+app/
+  layout.tsx           # корневой layout с TelegramProvider
+  page.tsx             # главная Mini App
+  api/
+    verify/route.ts    # HMAC проверка initData → выдача сессии
+    orders/route.ts    # пример защищённого endpoint
+components/
+  TelegramProvider.tsx
+  MainButton.tsx
+  BackButton.tsx
+lib/
+  telegram.ts          # типы и helper'ы
+  verify-init-data.ts  # серверная проверка
+  use-main-button.ts   # хук
+next.config.mjs
+middleware.ts          # CSP-хедеры и rewrite
+styles/
+  globals.css          # CSS-переменные темы
+```
+
+Telegram открывает Mini App в WebView, поэтому **CSP** и `frame-ancestors` должны разрешать `https://web.telegram.org`. Подробнее в секции про CSP-ошибки ниже.
+
+## TelegramProvider: контекст для приложения
+
+Прямые обращения к `window.Telegram.WebApp` по всему коду — антипаттерн: ломается SSR, плодятся undefined-чеки, теряется типизация. Заведите единый провайдер:
+
+```typescript
+'use client'
+
+import { createContext, useContext, useEffect, useState } from 'react'
+
+interface ThemeParams {
+  bg_color?: string
+  text_color?: string
+  hint_color?: string
+  link_color?: string
+  button_color?: string
+  button_text_color?: string
+  secondary_bg_color?: string
+}
+
+interface WebAppUser {
+  id: number
+  first_name: string
+  last_name?: string
+  username?: string
+  language_code?: string
+  is_premium?: boolean
+  photo_url?: string
+}
+
+interface WebApp {
+  initData: string
+  initDataUnsafe: { user?: WebAppUser; auth_date?: number; hash?: string }
+  themeParams: ThemeParams
+  colorScheme: 'light' | 'dark'
+  viewportHeight: number
+  viewportStableHeight: number
+  MainButton: {
+    setText: (t: string) => void
+    show: () => void
+    hide: () => void
+    onClick: (cb: () => void) => void
+    offClick: (cb: () => void) => void
+  }
+  ready: () => void
+  expand: () => void
+  close: () => void
+  onEvent: (event: string, handler: () => void) => void
+  offEvent: (event: string, handler: () => void) => void
+}
+
+declare global {
+  interface Window {
+    Telegram?: { WebApp: WebApp }
+  }
+}
+
+interface Ctx {
+  webApp: WebApp | null
+  user: WebAppUser | null
+  theme: ThemeParams
+  initData: string
+}
+
+const TelegramContext = createContext<Ctx>({ webApp: null, user: null, theme: {}, initData: '' })
+
+export function TelegramProvider({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<Ctx>({ webApp: null, user: null, theme: {}, initData: '' })
+
+  useEffect(() => {
+    const script = document.createElement('script')
+    script.src = 'https://telegram.org/js/telegram-web-app.js'
+    script.async = true
+    script.onload = () => {
+      const tg = window.Telegram?.WebApp
+      if (!tg) return
+      tg.ready()
+      tg.expand()
+      const apply = () => setState({
+        webApp: tg,
+        user: tg.initDataUnsafe.user ?? null,
+        theme: tg.themeParams,
+        initData: tg.initData,
+      })
+      apply()
+      tg.onEvent('themeChanged', apply)
+      tg.onEvent('viewportChanged', apply)
+    }
+    document.head.appendChild(script)
+    return () => { script.remove() }
+  }, [])
+
+  return <TelegramContext.Provider value={state}>{children}</TelegramContext.Provider>
+}
+
+export const useTelegram = () => useContext(TelegramContext)
+```
+
+Дальше любой компонент берёт пользователя через `useTelegram().user` — без прямого `window`.
+
+## Серверная проверка initData (HMAC-SHA256)
+
+Самая частая ошибка новичков — доверять `initData` на клиенте. На клиенте его легко подменить через DevTools. **Любая чувствительная операция должна быть проверена на сервере.**
+
+`lib/verify-init-data.ts`:
+
+```typescript
+import crypto from 'crypto'
+
+export interface TelegramUser {
+  id: number
+  first_name: string
+  last_name?: string
+  username?: string
+  language_code?: string
+  is_premium?: boolean
+}
+
+export function verifyInitData(
+  initData: string,
+  botToken: string,
+): { ok: boolean; user?: TelegramUser } {
+  const params = new URLSearchParams(initData)
+  const hash = params.get('hash')
+  params.delete('hash')
+
+  const dataCheckString = Array.from(params.entries())
+    .map(([k, v]) => `${k}=${v}`)
+    .sort()
+    .join('\n')
+
+  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest()
+  const expectedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex')
+
+  if (!hash || hash.length !== expectedHash.length) return { ok: false }
+  if (!crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(expectedHash, 'hex'))) {
+    return { ok: false }
+  }
+
+  const authDate = parseInt(params.get('auth_date') || '0', 10)
+  if (Date.now() / 1000 - authDate > 86400) return { ok: false }
+
+  const user = JSON.parse(params.get('user') || '{}') as TelegramUser
+  return { ok: true, user }
+}
+```
+
+Алгоритм:
+
+1. Парсим `initData` (это URL-encoded строка).
+2. Извлекаем `hash` и сортируем остальные параметры.
+3. Считаем `secret_key = HMAC_SHA256("WebAppData", bot_token)`.
+4. Считаем `data_check_hash = HMAC_SHA256(secret_key, sorted_params)`.
+5. Сравниваем с `hash` через **constant-time** (`timingSafeEqual`).
+6. Проверяем `auth_date` — не старше 24 часов.
+
+После успешной верификации сервер выдаёт собственный JWT/сессию, и дальше API работает с ней, а не с `initData` каждый раз.
+
+## Route Handler для верификации (`app/api/verify/route.ts`)
+
+```typescript
+import { NextResponse } from 'next/server'
+import { SignJWT } from 'jose'
+import { verifyInitData } from '@/lib/verify-init-data'
+
+export const runtime = 'nodejs' // crypto.timingSafeEqual недоступен на edge
+
+export async function POST(req: Request) {
+  const auth = req.headers.get('authorization') ?? ''
+  const initData = auth.startsWith('tma ') ? auth.slice(4) : ''
+  if (!initData) return NextResponse.json({ ok: false }, { status: 401 })
+
+  const result = verifyInitData(initData, process.env.BOT_TOKEN!)
+  if (!result.ok || !result.user) return NextResponse.json({ ok: false }, { status: 401 })
+
+  const token = await new SignJWT({ sub: String(result.user.id), u: result.user })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setExpirationTime('1h')
+    .sign(new TextEncoder().encode(process.env.JWT_SECRET!))
+
+  const res = NextResponse.json({ ok: true, user: result.user })
+  res.cookies.set('session', token, { httpOnly: true, secure: true, sameSite: 'none', maxAge: 3600 })
+  return res
+}
+```
+
+Клиент шлёт `Authorization: tma <initData>`, получает cookie с JWT и дальше ходит уже с ним.
+
+## Защищённый endpoint (`app/api/orders/route.ts`)
+
+```typescript
+import { NextResponse } from 'next/server'
+import { jwtVerify } from 'jose'
+
+export async function GET(req: Request) {
+  const cookie = req.headers.get('cookie') ?? ''
+  const session = /session=([^;]+)/.exec(cookie)?.[1]
+  if (!session) return NextResponse.json({ ok: false }, { status: 401 })
+
+  try {
+    const { payload } = await jwtVerify(session, new TextEncoder().encode(process.env.JWT_SECRET!))
+    const userId = Number(payload.sub)
+    const orders = await db.order.findMany({ where: { userId } })
+    return NextResponse.json({ ok: true, orders })
+  } catch {
+    return NextResponse.json({ ok: false }, { status: 401 })
+  }
+}
+```
+
+Принцип: `user_id` достаётся из проверенного JWT, **никогда** из query-параметров клиента.
+
+## Конфиг next.config.mjs с CSP
+
+```javascript
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: 'standalone',
+  reactStrictMode: true,
+  async headers() {
+    const csp = [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' https://telegram.org",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: https://t.me https://*.telegram.org",
+      "connect-src 'self' https://api.telegram.org",
+      "frame-ancestors https://web.telegram.org https://*.telegram.org",
+      "base-uri 'self'",
+      "form-action 'self'",
+    ].join('; ')
+
+    return [{
+      source: '/:path*',
+      headers: [
+        { key: 'Content-Security-Policy', value: csp },
+        { key: 'X-Content-Type-Options', value: 'nosniff' },
+        { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+        { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+      ],
+    }]
+  },
+}
+
+export default nextConfig
+```
+
+`X-Frame-Options` намеренно не используем — он несовместим с `frame-ancestors` для нескольких источников. CSP полностью покрывает защиту от clickjacking.
+
+## MainButton через хук `useMainButton`
+
+Чтобы не дублировать `setText`/`show`/`onClick`/`hide` в каждом экране:
+
+```typescript
+import { useEffect } from 'react'
+import { useTelegram } from '@/components/TelegramProvider'
+
+export function useMainButton(text: string, onClick: () => void, enabled = true) {
+  const { webApp } = useTelegram()
+
+  useEffect(() => {
+    if (!webApp) return
+    webApp.MainButton.setText(text)
+    if (enabled) webApp.MainButton.show()
+    else webApp.MainButton.hide()
+    webApp.MainButton.onClick(onClick)
+    return () => {
+      webApp.MainButton.offClick(onClick)
+      webApp.MainButton.hide()
+    }
+  }, [webApp, text, onClick, enabled])
+}
+```
+
+Использование:
+
+```typescript
+useMainButton(`Оплатить ${price} ₽`, handleCheckout, cart.length > 0)
+```
+
+## Темизация под `themeParams`
+
+Маппим параметры Telegram в CSS-переменные:
+
+```css
+:root {
+  --tg-bg: var(--tg-theme-bg-color, #ffffff);
+  --tg-text: var(--tg-theme-text-color, #000000);
+  --tg-hint: var(--tg-theme-hint-color, #999999);
+  --tg-link: var(--tg-theme-link-color, #2481cc);
+  --tg-button: var(--tg-theme-button-color, #2481cc);
+  --tg-button-text: var(--tg-theme-button-text-color, #ffffff);
+  --tg-secondary-bg: var(--tg-theme-secondary-bg-color, #f4f4f5);
+}
+
+body {
+  background: var(--tg-bg);
+  color: var(--tg-text);
+}
+```
+
+Telegram сам выставляет переменные `--tg-theme-*` на `<html>`. Если темизация нужна тонкая (например, генерация градиентов), подписывайтесь на `themeChanged` и пересчитывайте свои переменные:
+
+```typescript
+useEffect(() => {
+  if (!webApp) return
+  const apply = () => {
+    document.documentElement.style.setProperty('--accent', webApp.themeParams.button_color ?? '#2481cc')
+  }
+  apply()
+  webApp.onEvent('themeChanged', apply)
+  return () => webApp.offEvent('themeChanged', apply)
+}, [webApp])
+```
+
+## Локальная разработка через ngrok
+
+Mini App нельзя открыть на `http://localhost:3000` — Telegram требует HTTPS-домен. Что делать:
+
+1. Поставьте `ngrok` или `cloudflared`.
+2. Запустите: `ngrok http 3000` — получите URL вида `https://abcd-1234.ngrok-free.app`.
+3. В BotFather: `/mybots` → ваш бот → `Bot Settings` → `Menu Button` → вставьте URL ngrok.
+4. Откройте/перезапустите Mini App в Telegram-клиенте.
+
+```bash
+# Альтернатива через cloudflared (не требует регистрации):
+cloudflared tunnel --url http://localhost:3000
+```
+
+**Подводный камень:** на бесплатном плане ngrok домен меняется при каждом перезапуске — придётся переписывать его в BotFather. Платный план (`ngrok` Personal или Cloudflare named tunnel) фиксирует поддомен.
+
+Для отладки initData в браузере используйте dev-флаг и mock-объект `window.Telegram.WebApp` с фейковым подписанным initData (генерится из тестового токена).
+
+## Деплой на Vercel
+
+```bash
+npm i -g vercel
+vercel link
+vercel env add BOT_TOKEN production
+vercel env add JWT_SECRET production
+vercel deploy --prod
+```
+
+После деплоя:
+
+- Возьмите итоговый домен (`your-app.vercel.app` или кастомный).
+- В BotFather: `/setdomain` → ваш бот → вставьте домен.
+- Откройте Mini App, проверьте: в DevTools нет CSP-ошибок, `verify` возвращает 200, MainButton работает.
+
+Edge Runtime подойдёт только если вынесете `verifyInitData` в отдельный модуль, использующий Web Crypto API (`crypto.subtle`) вместо Node `crypto`. Иначе оставляйте `runtime: 'nodejs'`.
+
+## Деплой на Yandex Cloud / VPS
+
+Под self-hosted готовим standalone-сборку и Docker.
+
+`Dockerfile`:
+
+```dockerfile
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+EXPOSE 3000
+CMD ["node", "server.js"]
+```
+
+`docker-compose.yml`:
+
+```yaml
+services:
+  miniapp:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports: ["127.0.0.1:3000:3000"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+```
+
+nginx с TLS от Let's Encrypt (или Yandex Certificate Manager):
+
+```nginx
+server {
+  listen 443 ssl http2;
+  server_name app.example.com;
+  ssl_certificate     /etc/letsencrypt/live/app.example.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/app.example.com/privkey.pem;
+
+  location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+}
+```
+
+<InlineCTA>Соберём Mini App на Next.js под ваш продукт</InlineCTA>
+
+## Типичные ошибки CSP при деплое
+
+| Симптом | Причина | Решение |
+| --- | --- | --- |
+| Mini App белый, в консоли `Refused to load script` | `script-src 'self'` без `https://telegram.org` | добавить `https://telegram.org` в `script-src` |
+| Mini App не открывается, чёрный экран в Telegram | нет `frame-ancestors https://web.telegram.org` | расширить `frame-ancestors` |
+| Аватары пользователей не показываются | `img-src 'self'` без `https://t.me` | добавить `data: https://t.me https://*.telegram.org` |
+| Низкий рейтинг в Lighthouse | `'unsafe-inline'` в `script-src` без необходимости | использовать nonce/hash для inline-скриптов |
+| Ресурсы блокируются на iOS | mixed content (HTTP-картинки на HTTPS-странице) | переписать ссылки на HTTPS |
+| Fetch на API падает | `connect-src 'self'` без вашего API-домена | добавить домен бэкенда в `connect-src` |
+| Шрифты не грузятся | `font-src` не задан | добавить `font-src 'self' data:` |
+
+## Подводные камни iOS-клавиатуры
+
+При фокусе на input WebView Telegram на iOS поднимает viewport, но MainButton может оказаться под клавиатурой. Решение — динамический padding-bottom:
+
+```typescript
+import { useEffect } from 'react'
+import { useTelegram } from '@/components/TelegramProvider'
+
+export function useViewportFix() {
+  const { webApp } = useTelegram()
+  useEffect(() => {
+    if (!webApp) return
+    const handler = () => {
+      const diff = window.innerHeight - webApp.viewportStableHeight
+      document.body.style.paddingBottom = `${Math.max(0, diff)}px`
+    }
+    handler()
+    webApp.onEvent('viewportChanged', handler)
+    return () => webApp.offEvent('viewportChanged', handler)
+  }, [webApp])
+}
+```
+
+Также полезно:
+
+- На iOS не использовать `position: fixed` для нижних элементов — лучше `sticky` внутри основного скролл-контейнера.
+- `input` с `type="number"` на iOS открывает цифровую клавиатуру — на формах телефона лучше `inputMode="tel"`.
+- При закрытии клавиатуры viewport восстанавливается с задержкой 200–400 мс — не дёргайте лэйаут анимациями за это время.
+
+## Производительность WebView
+
+WebView Telegram чувствителен к большим бандлам. Что помогает:
+
+- статическая генерация (`generateStaticParams`, `output: "export"` где можно);
+- `dynamic import` для тяжёлых компонентов (графики, редакторы, картографические библиотеки);
+- target-bundle 200–500 КБ gzipped на первый экран;
+- `<Image>` Next.js с `priority` только для hero-картинки;
+- `preconnect` к API-домену через `<link rel="preconnect">`;
+- избегать массовых `fetch` на mount — батчинг через server components и параллельные `Promise.all`.
+
+На Android слабых телефонов Mini App с бандлом 2 МБ может стартовать 5–8 секунд — это уже область отказа от приложения.
+
+## Аналитика и тестирование
+
+Аналитика:
+
+- **Telegram Mini Apps Analytics** через `@telegram-apps/analytics` — нативная интеграция, идёт прямо в BotFather.
+- Кастомные события через свой backend: каждый клик MainButton/переход — POST на `/api/event` с уже верифицированной сессией.
+- Внешние сервисы (Amplitude, Yandex Metrica) — работают, но требуют разрешения в CSP `connect-src`/`script-src`.
+
+Тестирование:
+
+- Проверяйте на **трёх клиентах**: iOS, Android, Desktop. Поведение клавиатуры, viewport, MainButton, BackButton различается.
+- Используйте отдельный staging-бот с другим доменом — чтобы релизы не задевали продакшн пользователей.
+- Для e2e — Playwright против ngrok-домена, прокидывая mock `initData` через cookie.
+
+## Итого
+
+Telegram Mini App на Next.js 15 — это App Router + клиентский провайдер над SDK + серверная верификация `initData` через HMAC + темизация через CSS-переменные + нативные кнопки + аккуратный CSP. Главные подводные камни — `frame-ancestors`, бандл-сайз, виртуальная клавиатура iOS и доверие `initData` без проверки. Срок разработки MVP — 2–3 недели, среднего продукта — 4–8 недель в зависимости от глубины интеграций.
+
+<Faq>
+  <FaqItem q="Как структурировать проект Telegram Mini App на Next.js?">
+    Базовый каркас на App Router. app/ — страницы и роуты. app/api/verify/route.ts — серверный эндпоинт верификации initData. components/ — UI-компоненты. lib/telegram/ — обёртка над SDK Telegram WebApp. lib/auth/ — JWT/сессия после верификации. styles/ — Tailwind или собственные стили. next.config.mjs — настройки заголовков (CSP, frame-ancestors). Telegram открывает Mini App в WebView, поэтому CSP и frame-ancestors должны разрешать https://web.telegram.org, иначе приложение не откроется внутри Telegram.
+  </FaqItem>
+  <FaqItem q="Как использовать Telegram WebApp SDK в Next.js?">
+    В клиентских компонентах подключается официальный SDK через скрипт https://telegram.org/js/telegram-web-app.js или npm-пакет-обёртку. Через window.Telegram.WebApp доступны: initData и initDataUnsafe (данные о пользователе и сессии); themeParams и colorScheme (параметры темы); MainButton и BackButton (нативные кнопки внизу/в шапке); HapticFeedback (тактильный отклик); viewportHeight / viewportStableHeight (размеры viewport); методы ready(), expand(), close(). Лучше обернуть SDK в собственный React-провайдер с типизацией и хуками вроде useMainButton(), useTheme(), useUser().
+  </FaqItem>
+  <FaqItem q="Как правильно верифицировать initData на сервере?">
+    Самая частая ошибка новичков — доверять initData на клиенте, его легко подменить. Любая чувствительная операция должна быть проверена на сервере. Алгоритм: парсим initData (URL-encoded строка); извлекаем hash и сортируем остальные параметры; считаем secret_key = HMAC_SHA256("WebAppData", bot_token); считаем data_check_hash = HMAC_SHA256(secret_key, sorted_params); сравниваем с hash из initData; дополнительно проверяем auth_date — не старше 24 часов. После успешной верификации сервер выдаёт собственный JWT/сессию, и дальше API работает с ней.
+  </FaqItem>
+  <FaqItem q="Как поддержать тему Telegram в Mini App на Next.js?">
+    Telegram передаёт текущую цветовую схему через themeParams. Игнорировать её нельзя: пользователь, у которого тёмная тема, увидит белый фон, и UI будет выглядеть «как сайт». Решение: завести CSS-переменные --tg-bg, --tg-text, --tg-button и т.д.; маппить значения из themeParams в эти переменные при загрузке; использовать переменные везде в стилях (Tailwind через theme.extend.colors). При смене темы (пользователь переключил у себя) Telegram эмитит событие — подписавшись на него, можно обновить переменные на лету.
+  </FaqItem>
+  <FaqItem q="Зачем использовать MainButton вместо своих кнопок в Mini App?">
+    MainButton — нативная кнопка внизу WebApp. Она лучше любой кастомной по двум причинам: учитывает безопасные зоны (особенно на iOS); интегрирована с клавиатурой, не перекрывается полями ввода. Идиома: держать MainButton всегда и менять её текст под текущий шаг. Например, на форме — «Сохранить», на чекауте — «Оплатить 1290 ₽», на экране ошибки — «Попробовать снова». Аналогично с BackButton — на iOS привычнее жест свайп, но кнопка нужна для Android и десктопа.
+  </FaqItem>
+  <FaqItem q="Как оптимизировать производительность Telegram Mini App?">
+    WebView Telegram чувствителен к большим бандлам. Что помогает. Статическая генерация (output: "export" или generateStaticParams) везде, где можно. Dynamic import для тяжёлых компонентов (графики, редакторы). Target-bundle 200–500 КБ gzipped. &lt;Image&gt; Next.js с priority только для первого экрана. Preconnect к API-домену. Избегать массовых fetch на mount — батчинг через server components. На Android слабых телефонов Mini App с бандлом 2 МБ может стартовать 5–8 секунд — это уже область отказа от приложения, и пользователь закроет его до загрузки.
+  </FaqItem>
+  <FaqItem q="Какие самые частые ошибки CSP при запуске Mini App?">
+    Семь типичных кейсов. script-src 'self' без https://telegram.org — Mini App не подгружает SDK и остаётся белой. frame-ancestors не содержит https://web.telegram.org — Telegram WebView не открывает страницу, чёрный экран. img-src 'self' без https://t.me и https://*.telegram.org — не показываются аватары пользователей. unsafe-inline в script-src без необходимости — снижает рейтинг безопасности и упрощает XSS. Mixed content (HTTP-ресурсы на HTTPS-странице) — блокировка Telegram WebView, особенно на iOS. connect-src 'self' без вашего API-домена — fetch падает с net::ERR_FAILED. Отсутствие font-src — не грузятся кастомные шрифты, фолбэк на системные.
+  </FaqItem>
+  <FaqItem q="Как локально разрабатывать Mini App через ngrok?">
+    Mini App требует HTTPS-домен — localhost не подойдёт. Ставите ngrok (или cloudflared), запускаете ngrok http 3000, получаете URL вида https://abcd-1234.ngrok-free.app. В BotFather через /mybots → Bot Settings → Menu Button вставляете этот URL. Перезапускаете Mini App в Telegram-клиенте. Подводный камень: на бесплатном плане ngrok домен меняется при каждом перезапуске — придётся переписывать в BotFather; платный план или Cloudflare named tunnel фиксируют поддомен. Альтернатива cloudflared tunnel --url http://localhost:3000 не требует регистрации, но домен тоже временный.
+  </FaqItem>
+  <FaqItem q="Как задеплоить Telegram Mini App на Vercel или VPS?">
+    На Vercel: vercel link, добавить переменные окружения BOT_TOKEN и JWT_SECRET через vercel env add, запустить vercel deploy --prod. После деплоя зарегистрировать домен в BotFather через /setdomain. На VPS или Yandex Cloud — собрать standalone-образ Docker (next.config.mjs с output: "standalone"), запустить через docker-compose с healthcheck, настроить nginx с TLS от Let's Encrypt или Yandex Certificate Manager. nginx проксирует на 127.0.0.1:3000, передаёт X-Forwarded-For и X-Forwarded-Proto. Edge Runtime для verify-эндпоинта работает только если использовать Web Crypto API вместо Node crypto.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram Mini App на Next.js под вашу задачу — от ТЗ до запуска. Бесплатная оценка проекта в течение рабочего дня.
+</EndCTA>

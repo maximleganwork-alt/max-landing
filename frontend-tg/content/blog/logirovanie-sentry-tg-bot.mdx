@@ -1,0 +1,412 @@
+---
+title: "Логирование и Sentry для Telegram-бота"
+description: "Логирование Telegram-бота: структурные логи, уровни, Sentry для ошибок. Что писать, чего избегать, как не утечь персональные данные в логи."
+date: "2026-03-18"
+tags: ["Telegram", "разработка", "мониторинг"]
+---
+
+В проде у бота нет UI, чтобы понять, что сломалось. Вся диагностика — через логи и трекер ошибок. Без них можно неделями ловить «иногда не приходит подтверждение» вслепую: пользователь жалуется, разработчик пожимает плечами, продакт нервничает. Telegram-боты особенно болезненно переносят отсутствие наблюдаемости: апдейты приходят асинхронно, нет HTTP-ответа клиенту, у пользователя нет консоли разработчика, чтобы прислать стектрейс. Поэтому без правильно поставленного логирования, трекера ошибок и метрик команда работает вслепую. В этой статье разберём, как поставить наблюдаемость с нуля, не утопив команду в шуме и не утечь персональные данные пользователей в облачные сервисы.
+
+## Зачем структурированные логи
+
+Текстовые логи в духе `User 123 made order 456 for 1500 RUB` удобно читать глазами, но в продакшене это бесполезный набор строк. Когда у вас тысячи апдейтов в минуту и сотни типов событий, без структуры вы ничего не найдёте. Структурированные логи решают три задачи.
+
+**Поиск**. JSON с полями `event`, `user_id`, `order_id` позволяет в Loki или Kibana за секунду собрать все события одного пользователя или всех пользователей одной когорты. С текстовыми логами — регулярки на гигабайтах данных и пляска с экранированием.
+
+**Фильтрация и агрегация**. Сколько раз за час падал handler `process_payment`? У структурированных логов это запрос `count by (event) where event="payment_failed"`. У текстовых — отдельный grep, отдельный wc, и всё это заново при каждом инциденте.
+
+**Алерты**. Если поле `level=ERROR` приходит более пяти раз в минуту — отправить на дежурного. С текстовыми логами этот алерт не написать: в любой момент кто-то закоммитит лог `print("ERROR in test")` и сломает счётчик.
+
+Структурированные логи — это контракт между разработчиком и системой мониторинга. Один раз договорились о схеме полей — дальше алерты и дашборды работают сами.
+
+## Уровни: когда что писать
+
+Стандартные уровни (DEBUG, INFO, WARNING, ERROR, CRITICAL) — это договор о шуме. У каждого уровня своя аудитория и свой ретеншн.
+
+- **DEBUG** — подробности для разбора инцидента: каждое API-сообщение, состояние FSM, тело апдейта. Включаем выборочно, для одного пользователя или одного хендлера. В проде по умолчанию выключен.
+- **INFO** — бизнес-события: новый пользователь, оформление заказа, успешный платёж, прохождение квиза. Это «история бизнеса», которую захочется поднять через год для аналитики или ретроспективы.
+- **WARNING** — что-то пошло не так, но бот выкрутился: ретрай оплаты, фоллбек на дефолтный ответ, превышен soft-лимит запросов, медленный ответ внешнего API. Не требует немедленной реакции, но требует анализа на длинной дистанции.
+- **ERROR** — исключения и неожиданное поведение, требующее реакции дежурного. Каждый ERROR — это потенциальный пост-мортем.
+- **CRITICAL** — отказ ключевых компонентов: упал Redis, недоступен Bot API, не отвечает база. Будит дежурного ночью.
+
+Главная ошибка — лить INFO как DEBUG. Хороший INFO-лог — это «история бизнес-событий», а не «история HTTP-запросов». Если в INFO попадает «вошёл в middleware», «вышел из middleware», «отправил запрос», «получил ответ» — это превращает аналитику в кашу и бьёт по бюджету хранения.
+
+## Сравнение библиотек логирования (Python)
+
+| Библиотека | Структурные логи | JSON из коробки | Контекстные переменные | Производительность |
+|---|---|---|---|---|
+| `logging` (stdlib) | Нет, через формат-строки | Через `python-json-logger` | Нет, нужен `contextvars` руками |  Базовая |
+| `structlog` | Да, нативно | Через `JSONRenderer` | Да, `bind_contextvars` | Высокая |
+| `loguru` | Через `extra={...}` | Через `serialize=True` | Через `contextualize` | Средняя |
+
+Для Telegram-ботов рекомендуем `structlog`: он спроектирован под структурные логи, имеет хороший contextvars-интеграцию и нормально дружит со стандартным `logging` (можно перенаправить логи aiogram через стандартный модуль).
+
+## Конфигурация structlog
+
+Минимальный продакшен-конфиг:
+
+```python
+import logging
+import structlog
+from structlog.contextvars import merge_contextvars
+
+logging.basicConfig(format="%(message)s", level=logging.INFO)
+
+structlog.configure(
+    processors=[
+        merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    logger_factory=structlog.PrintLoggerFactory(),
+    cache_logger_on_first_use=True,
+)
+
+log = structlog.get_logger()
+log.info("bot_started", version="1.4.2", env="prod")
+```
+
+На выходе — однострочный JSON, готовый для Loki или Datadog. `merge_contextvars` подмешивает в каждое сообщение поля, выставленные через `structlog.contextvars.bind_contextvars(user_id=...)` — это и есть способ передать `trace_id` через все слои без явного аргумента.
+
+## Корреляционные ID
+
+Trace ID — сквозной идентификатор, привязанный к одному апдейту. Генерируется в middleware на входе и проносится через все слои: вызов БД, поход во внешний API, постановка задачи в очередь, ответ пользователю. Без trace_id вы не сможете собрать историю обработки одного апдейта в распределённой системе.
+
+В Python — `contextvars`, в Node — `AsyncLocalStorage`, в Go — `context.Context`. Минимальный набор полей, который должен быть в каждой записи лога:
+
+- `trace_id` — UUID на апдейт.
+- `update_id` — числовой ID апдейта от Telegram.
+- `user_id` — числовой ID пользователя.
+- `chat_id` — числовой ID чата (для групп отличается от user_id).
+- `command` или `handler` — какой handler обработал апдейт.
+- `bot_version` — версия деплоя бота.
+
+С такими полями вы поднимаете всю историю обработки апдейта одним запросом `{trace_id="abc-123"}`, а не лезете в пять сервисов руками.
+
+## Sentry: что это и зачем
+
+Логи отвечают на вопрос «что происходило». Sentry (и аналоги — GlitchTip, Bugsnag, Rollbar) отвечает на вопрос «что сломалось и где». Это специализированный трекер ошибок: группирует одинаковые исключения по fingerprint, показывает стектрейс с переменными, ведёт счётчик «сколько пользователей затронуто», строит графики деградации, шлёт алерты в Slack или Telegram.
+
+Минимальная интеграция:
+
+1. SDK инициализируется на старте.
+2. Любое необработанное исключение в обработчике летит в Sentry с трейсом.
+3. К каждому событию прикрепляются `user_id`, `update_id`, `command` — для воспроизведения.
+4. Алерты в Telegram-канал команды на новые ошибки и регрессии.
+
+Aiogram и grammY оборачивают обработчики через middleware — туда же удобно вешать `sentry_sdk.capture_exception` или установить интеграцию `LoggingIntegration`, которая поднимает все `logger.error(...)` как события Sentry.
+
+## Sentry init для aiogram
+
+```python
+import sentry_sdk
+from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.integrations.asyncio import AsyncioIntegration
+
+sentry_sdk.init(
+    dsn="https://example@o0.ingest.sentry.io/0",
+    environment="prod",
+    release="bot@1.4.2",
+    traces_sample_rate=0.2,
+    profiles_sample_rate=0.1,
+    send_default_pii=False,
+    integrations=[
+        LoggingIntegration(level=logging.INFO, event_level=logging.ERROR),
+        AsyncioIntegration(),
+    ],
+    before_send=scrub_pii,
+)
+```
+
+`release` в формате `название@версия` нужен Sentry для функции «эта ошибка появилась в релизе X» — критично при поиске регрессий после деплоя. `send_default_pii=False` отключает автоматическое прикрепление IP и заголовков. `before_send` — функция-фильтр, через которую SDK прогоняет каждое событие перед отправкой.
+
+## Breadcrumbs в handler
+
+Breadcrumbs — это «след» событий, который Sentry прикрепляет к ошибке. Когда что-то сломается, в карточке Sentry будут видны последние 50 действий: какой handler вошёл, какой запрос ушёл в БД, какой ответ пришёл от внешнего API. Это сильно сокращает время разбора инцидентов.
+
+```python
+from aiogram import BaseMiddleware
+from sentry_sdk import set_user, set_tag, add_breadcrumb, capture_exception
+
+class SentryMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user = data.get("event_from_user")
+        if user:
+            set_user({"id": user.id})
+        set_tag("update_id", event.update_id)
+        add_breadcrumb(
+            category="aiogram",
+            message=f"handler:{handler.__name__}",
+            level="info",
+        )
+        try:
+            return await handler(event, data)
+        except Exception as exc:
+            capture_exception(exc)
+            raise
+```
+
+`set_user` привязывает событие к пользователю — в карточке Sentry будет «затронуто N пользователей», а не «N событий». `set_tag` добавляет фасет, по которому удобно фильтровать в UI.
+
+<InlineCTA>Поможем спроектировать архитектуру под нагрузку</InlineCTA>
+
+## Sensitive data scrubbing
+
+Главная ошибка — логировать тело сообщений «для удобства». В чатах боту прилетают телефоны, паспорта, медицинские данные, банковские реквизиты. Эти данные не должны лежать в Loki, Sentry или Datadog. Это требование 152-ФЗ и GDPR, а ещё репутационный риск: утечка логов с ПДн = потенциально многомиллионный штраф.
+
+Правила:
+
+1. Не логировать полный текст сообщения пользователя.
+2. Маскировать телефоны, email, карты: `+7***4567`, `i***@gmail.com`, `4242 **** **** 1234`.
+3. Не сохранять `pre_checkout_query.invoice_payload`, если в нём есть платёжные детали.
+4. Конфигурировать Sentry `before_send` для удаления чувствительных полей.
+5. Для медицинских и финансовых ботов — отдельный аудит логов раз в квартал.
+
+Пример скрабера для Sentry:
+
+```python
+import re
+
+PHONE_RE = re.compile(r"(\+?\d{1,3})\d{6,10}(\d{2,4})")
+EMAIL_RE = re.compile(r"([\w.-]+)@([\w.-]+)")
+CARD_RE = re.compile(r"\b(\d{4})\d{8,12}(\d{4})\b")
+
+def scrub_pii(event, hint):
+    def mask(s: str) -> str:
+        s = PHONE_RE.sub(r"\1***\2", s)
+        s = EMAIL_RE.sub(r"\1***@\2", s)
+        s = CARD_RE.sub(r"\1********\2", s)
+        return s
+
+    if msg := event.get("message"):
+        event["message"] = mask(msg)
+    for exc in event.get("exception", {}).get("values", []):
+        if exc_msg := exc.get("value"):
+            exc["value"] = mask(exc_msg)
+    return event
+```
+
+Если для отладки нужно тело сообщения — логируйте только в DEBUG и отдельным потоком, не уходящим в облако.
+
+## Sampling: errors 100%, traces 10-30%
+
+Sentry берёт деньги за events. На активном боте легко улететь в десятки тысяч долларов в год, если отправлять каждый запрос как transaction. Поэтому используют sampling.
+
+- **Errors** — 100%. Каждое исключение должно дойти до Sentry: пропустить ошибку дороже, чем сохранить.
+- **Traces (performance)** — 10-30%. Этого достаточно, чтобы видеть p95/p99 латентности, но не платить за миллионы транзакций.
+- **Profiling** — 5-10% от traces. Сэмплы профилировщика тяжёлые, держите долю низкой.
+
+Можно настроить динамический sampler: 100% для редких хендлеров, 5% для горячих. SDK поддерживает функцию `traces_sampler`, которая получает контекст и возвращает долю.
+
+## Альтернативы Sentry
+
+| Сервис | Модель | Плюсы | Минусы |
+|---|---|---|---|
+| Sentry Cloud | SaaS, freemium | Лучший UX, интеграции | Дорого на масштабе |
+| GlitchTip | Self-hosted, OSS | API-совместим с Sentry, бесплатно | Нет profiling, slimmer UI |
+| Sentry Self-hosted | OSS, on-prem | Полный функционал, контроль данных | Тяжёлая инсталляция (Postgres + Kafka + ClickHouse) |
+| Bugsnag | SaaS | Хорошие release dashboards | Дороже Sentry |
+| Rollbar | SaaS | RQL-запросы по событиям | Слабее интеграций |
+| Highlight.io | SaaS, OSS | Session replay для веба | Слабее под бэкенд |
+
+Для большинства Telegram-ботов: GlitchTip self-hosted, если важна цена и контроль данных, или Sentry Cloud, если важна скорость старта и автоматизации релизов.
+
+## Логи в файл vs stdout
+
+Старая школа — писать в файл с rotating handler:
+
+```python
+from logging.handlers import RotatingFileHandler
+handler = RotatingFileHandler("/var/log/bot.log", maxBytes=50_000_000, backupCount=10)
+```
+
+Современная (cloud-native) — писать в stdout, а сбор и ротацию делегировать Docker, systemd-journald или сборщику. Преимущества:
+
+- Stateless контейнер, без mounted volume под логи.
+- Стандартный pipeline: `docker logs`, `kubectl logs`, `journalctl -u bot.service`.
+- Логи попадают в централизованное хранилище без участия приложения.
+- Перезапуск контейнера не теряет логи (если есть сборщик).
+
+Для Docker-деплоя — только stdout/stderr. Для сервера на metal или systemd — допустимо в файл, но проще оставить journald.
+
+<InlineCTA>Поможем настроить production-grade инфраструктуру для бота</InlineCTA>
+
+## Сбор логов: куда отправлять
+
+| Стек | Транспорт | Хранилище | UI | Когда выбирать |
+|---|---|---|---|---|
+| Loki + Promtail | gRPC | Object storage (S3) | Grafana | Дешёвое хранение, нет full-text search |
+| ELK | Filebeat / Logstash | Elasticsearch | Kibana | Нужен полнотекстовый поиск |
+| Datadog Logs | Agent | Cloud | Datadog | SaaS «всё в одном», дорого |
+| Yandex Cloud Logging | Fluent Bit / SDK | Облако | Cloud Console | Деплой в Yandex Cloud, требования по 152-ФЗ |
+| Vector + ClickHouse | Vector | ClickHouse | Grafana / Metabase | High-throughput, контроль расходов |
+
+Для Telegram-ботов на VPS в России — Loki + Promtail + Grafana или Yandex Cloud Logging. ELK перебор, Datadog слишком дорогой и не российский.
+
+## Метрики: что снимать
+
+Логи и Sentry — для разбора инцидента после факта. Метрики — для проактивного мониторинга и алертов. Минимум:
+
+- Количество апдейтов в секунду (RPS).
+- Латентность обработки (histogram → p50, p95, p99).
+- Доля ошибок на 1000 апдейтов.
+- Длина очереди фоновых задач (если есть Celery / arq / RQ).
+- Лаг long polling или время доставки webhook.
+- Количество вызовов Bot API по методу.
+- Доля 429 (rate limit) от Telegram.
+
+Prometheus + Grafana — отраслевой стандарт. Алерт на «доля ошибок выше 1% за 5 минут» уведомит дежурного раньше, чем пользователь напишет в поддержку.
+
+## Prometheus metrics в боте
+
+```python
+from prometheus_client import Counter, Histogram, start_http_server
+
+UPDATES = Counter(
+    "bot_updates_total",
+    "Total updates received",
+    ["handler", "status"],
+)
+LATENCY = Histogram(
+    "bot_handler_latency_seconds",
+    "Handler latency",
+    ["handler"],
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
+)
+
+class MetricsMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        name = handler.__name__
+        with LATENCY.labels(handler=name).time():
+            try:
+                result = await handler(event, data)
+                UPDATES.labels(handler=name, status="ok").inc()
+                return result
+            except Exception:
+                UPDATES.labels(handler=name, status="error").inc()
+                raise
+
+start_http_server(9090)
+```
+
+Prometheus периодически опрашивает `:9090/metrics`, складывает в TSDB, Grafana строит графики. Alerting через Alertmanager: правило `rate(bot_updates_total{status="error"}[5m]) > 0.01` шлёт алерт.
+
+## Health-checks
+
+Liveness и readiness — два разных вопроса. Liveness отвечает «процесс жив», readiness — «процесс готов принимать трафик».
+
+```python
+from aiohttp import web
+
+async def healthz(request):
+    return web.Response(text="ok")
+
+async def readyz(request):
+    try:
+        await bot.get_me()  # liveness Bot API
+        await db.execute("SELECT 1")  # liveness БД
+        return web.Response(text="ready")
+    except Exception as exc:
+        return web.Response(status=503, text=str(exc))
+
+app = web.Application()
+app.router.add_get("/healthz", healthz)
+app.router.add_get("/readyz", readyz)
+```
+
+Kubernetes использует эти эндпоинты для рестартов и роутинга трафика. Docker Compose — для healthcheck-условий зависимостей.
+
+## Distributed tracing
+
+Если бот ходит в несколько микросервисов (CRM, оплата, склад, ML-инференс), без distributed tracing невозможно понять, где тормозит запрос. Инструмент стандарта — OpenTelemetry: SDK инжектит `traceparent` в HTTP-заголовки, бэкенды его подхватывают, и в Jaeger / Tempo / Sentry виден полный span-tree от Telegram-апдейта до ответа БД.
+
+Минимум — настроить экспортёр OTLP в Tempo или Jaeger, обернуть HTTP-клиент в инструментацию (`opentelemetry-instrumentation-aiohttp-client`), и автоматически каждый запрос будет трассироваться. Sentry поддерживает OpenTelemetry как источник span'ов.
+
+## Алерты на бизнес-метрики
+
+Технические алерты («ошибки выше N%») необходимы, но недостаточны. Бот может работать без ошибок и при этом не приносить деньги — например, поломалась интеграция с CRM, и лиды не доходят. Технически всё ОК, бизнес стоит.
+
+Алерты на бизнес-метрики:
+
+- Конверсия квиза упала ниже X% за час.
+- Платежи не проходят более N минут подряд.
+- Резко выросла доля брошенных корзин.
+- Количество новых пользователей упало в два раза против скользящей средней.
+- Среднее время до первого платежа выросло на N процентов.
+
+Это пишется в Grafana или Yandex Cloud Monitoring как production alerts уровня бизнеса. Срабатывает реже технических, но каждое срабатывание — реальные деньги.
+
+## On-call процесс
+
+Алерт без процесса — это просто шум в чате. Минимальный on-call процесс для команды из 2-5 разработчиков:
+
+1. Расписание дежурств: одна неделя на человека.
+2. Канал алертов в Telegram (или Slack), куда летят CRITICAL и ERROR с пороговыми условиями.
+3. Эскалация: если дежурный не отреагировал за 15 минут — уведомление лидеру.
+4. Runbook: на каждый частый алерт — короткая инструкция «что проверить, что сделать».
+5. Пост-мортем: после каждого инцидента — заметка в notion с timeline и action items.
+
+Инструменты: PagerDuty (стандарт), OpsGenie (дешевле), Grafana OnCall (OSS), или собственный Telegram-бот, который пингует дежурного и эскалирует через 15 минут.
+
+## 152-ФЗ и GDPR в логах
+
+Логи — это «обработка персональных данных». Если в логе лежит `user_id` Telegram, это уже ПДн (косвенный идентификатор). Если в логе лежит телефон, email, ФИО — прямые ПДн.
+
+Требования:
+
+- В уведомлении Роскомнадзора (152-ФЗ) указать, что логи — это часть обработки ПДн.
+- Логи не должны храниться дольше срока, нужного для целей обработки. Стандарт — 30-90 дней для оперативных, 1 год для аудита.
+- Доступ к логам — только разработчикам, с журналированием доступа.
+- При запросе пользователя «удалите мои данные» — удалить и логи. Технически: либо retention достаточно короткий, либо специальный pipeline зачистки по `user_id`.
+- При трансграничной передаче (Sentry Cloud в США / ЕС) — отдельное уведомление РКН по ст. 12 152-ФЗ.
+
+Безопасный путь — self-hosted Sentry или GlitchTip в российском контуре + Loki в Yandex Cloud, без выезда ПДн за границу.
+
+## Чек-лист перед продом
+
+1. Структурные JSON-логи с уровнями.
+2. Sentry с фильтром ПДн в `before_send`.
+3. trace_id во всех слоях через contextvars.
+4. Метрики латентности, ошибок и очередей в Prometheus.
+5. Health-чек `/healthz` и `/readyz`.
+6. Алерты в Telegram-канал команды на критичные события.
+7. Алерты на бизнес-метрики (конверсия, платежи).
+8. Ретеншн логов 30-90 дней и архив холодных логов.
+9. Доступ к логам и Sentry — только разработчикам, с журналированием.
+10. Runbook на каждый частый алерт, расписание on-call.
+
+## Итого
+
+Логирование и Sentry — не «приятное дополнение», а часть продакшен-готовности бота. Структурные логи решают задачу поиска и фильтрации, Sentry — задачу группировки и приоритизации ошибок, метрики и алерты — задачу проактивной реакции до того, как пользователь напишет в поддержку. Скрабинг ПДн перед отправкой в облако — требование 152-ФЗ и GDPR, а не «приятное дополнение». Настройка занимает 1-3 дня, поддержка после — около часа в неделю на чистку шума и обновление дашбордов. На первом же серьёзном инциденте всё это окупается.
+
+<Faq>
+  <FaqItem q="Какие уровни логирования использовать в Telegram-боте?">
+    Базовый набор. DEBUG — подробности: каждое API-сообщение, состояние FSM, тело апдейта; включаем только при разборе инцидента. INFO — бизнес-события: новый пользователь, оформление заказа, успешный платёж; ровно то, что вам захочется поднять через год для аналитики. WARNING — что-то пошло не так, но бот выкрутился: ретрай оплаты, фоллбек на дефолтный ответ, превышен лимит запросов. ERROR — исключения и неожиданное поведение, требующее реакции дежурного. CRITICAL — отказ ключевых компонентов: упал Redis, недоступен Bot API, не отвечает база; будит дежурного ночью.
+  </FaqItem>
+  <FaqItem q="Зачем нужны структурные логи для Telegram-бота?">
+    Текстовые логи удобно читать глазами, но невозможно фильтровать в продакшене. Используйте структурные: JSON-строка с полями event, user_id, order_id, latency_ms, request_id. Python — structlog или loguru с JSON-выводом. Node.js — pino. Go — zap или slog. Все они генерируют JSON, готовый для Loki, ELK или Datadog. Минимум обязательных полей: timestamp, level, event, user_id, trace_id для связывания цепочки. Структурные логи дают возможность фильтровать по полям, агрегировать счётчики и строить алерты — то, что невозможно с текстовыми.
+  </FaqItem>
+  <FaqItem q="Как настроить Sentry для Telegram-бота на aiogram?">
+    Установить sentry-sdk, инициализировать на старте с DSN, environment, release, traces_sample_rate 0.1-0.3, send_default_pii False, before_send с функцией скраба ПДн. Подключить LoggingIntegration и AsyncioIntegration. В aiogram оборачиваете все хендлеры middleware: на входе set_user из event.from_user, set_tag update_id, add_breadcrumb с именем хендлера. На исключении — capture_exception и raise дальше. release в формате name@version нужен Sentry для определения регрессий после деплоя.
+  </FaqItem>
+  <FaqItem q="Как избежать утечки персональных данных в логи бота?">
+    Не логировать полный текст сообщения пользователя — там может быть телефон, паспорт, медицинские данные. Маскировать телефоны, email, карты регулярками: +7***4567, i***@gmail.com, 4242 **** **** 1234. Не сохранять pre_checkout_query.invoice_payload, если в нём платёжные детали. Конфигурировать Sentry before_send для прогона событий через скрабер. Для медицинских и финансовых ботов — отдельный аудит логов раз в квартал. Если для отладки нужно тело сообщения — только в DEBUG и отдельным потоком, не уходящим в облако. Утечка логов с ПДн = штраф по 152-ФЗ и репутационный ущерб.
+  </FaqItem>
+  <FaqItem q="Что такое trace_id и зачем он в Telegram-боте?">
+    Trace ID — сквозной идентификатор, привязанный к одному апдейту. Генерируется в middleware на входе и проносится через все слои: вызов БД, поход во внешний API, постановка задачи в очередь. В Python — contextvars, в Node — AsyncLocalStorage, в Go — context.Context. Структурный логгер автоматически подмешивает его в каждую запись. С trace_id в логах вы поднимаете всю историю обработки апдейта одним фильтром, а не лезете в пять сервисов руками. Минимальный набор корреляционных полей: trace_id, update_id, user_id, chat_id, handler, bot_version.
+  </FaqItem>
+  <FaqItem q="Какие метрики и алерты нужны для Telegram-бота?">
+    Минимум технических метрик: апдейты в секунду, латентность p50/p95/p99, доля ошибок на 1000 апдейтов, длина очереди задач, лаг long polling, доля 429 от Telegram, количество вызовов Bot API по методу. Стек — Prometheus + Grafana с Alertmanager. Алерт на «доля ошибок выше 1% за 5 минут» уведомит дежурного раньше пользователя. Бизнес-метрики тоже критичны: конверсия квиза, доля прошедших платежей, новые пользователи в час. Бот может технически работать, но бизнес стоять — например, упала интеграция с CRM. Алерты на бизнес-метрики срабатывают реже, но всегда означают реальные деньги.
+  </FaqItem>
+  <FaqItem q="Какие альтернативы Sentry для self-hosted сценария?">
+    GlitchTip — open-source трекер ошибок, API-совместим с Sentry SDK, ставится из docker-compose за 15 минут. Не имеет profiling и session replay, но для большинства Telegram-ботов хватает. Sentry Self-hosted — полный функционал, но требует Postgres, Kafka, ClickHouse, Redis и минимум 8 ГБ RAM на сервер. Bugsnag и Rollbar — SaaS-альтернативы Sentry Cloud, не подходят для требований по локализации ПДн. Для российских проектов оптимально GlitchTip в собственном контуре или Sentry Self-hosted на отдельной VM.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка в течение рабочего дня.
+</EndCTA>

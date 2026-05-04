@@ -1,6 +1,6 @@
 "use client";
 
-import { motion, useReducedMotion, type HTMLMotionProps } from "framer-motion";
+import { m, useReducedMotion, type HTMLMotionProps } from "framer-motion";
 import type { ReactNode } from "react";
 
 interface AnimateInProps extends Omit<HTMLMotionProps<"div">, "children"> {
@@ -12,7 +12,7 @@ interface AnimateInProps extends Omit<HTMLMotionProps<"div">, "children"> {
 export function AnimateIn({ children, delay = 0, amount = 0, ...rest }: AnimateInProps) {
   const reduced = useReducedMotion();
   return (
-    <motion.div
+    <m.div
       initial={{ opacity: 0, y: reduced ? 0 : 16 }}
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, margin: "0px 0px 100px 0px", amount }}
@@ -20,7 +20,7 @@ export function AnimateIn({ children, delay = 0, amount = 0, ...rest }: AnimateI
       {...rest}
     >
       {children}
-    </motion.div>
+    </m.div>
   );
 }
 
@@ -33,7 +33,7 @@ interface StaggerProps {
 export function Stagger({ children, className, stagger = 0.08 }: StaggerProps) {
   const reduced = useReducedMotion();
   return (
-    <motion.div
+    <m.div
       initial="hidden"
       whileInView="visible"
       viewport={{ once: true, margin: "0px 0px 100px 0px", amount: 0 }}
@@ -44,14 +44,14 @@ export function Stagger({ children, className, stagger = 0.08 }: StaggerProps) {
       className={className}
     >
       {children}
-    </motion.div>
+    </m.div>
   );
 }
 
 export function StaggerItem({ children, className }: { children: ReactNode; className?: string }) {
   const reduced = useReducedMotion();
   return (
-    <motion.div
+    <m.div
       variants={{
         hidden: { opacity: 0, y: reduced ? 0 : 16 },
         visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } },
@@ -59,6 +59,6 @@ export function StaggerItem({ children, className }: { children: ReactNode; clas
       className={className}
     >
       {children}
-    </motion.div>
+    </m.div>
   );
 }

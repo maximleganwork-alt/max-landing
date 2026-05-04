@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, m } from "framer-motion";
 import { Button } from "../ui/Button";
 import { reachGoal } from "../../lib/analytics";
 import { smoothScrollTo } from "../../lib/utils";
@@ -35,7 +35,7 @@ export function StickyCTA() {
   return (
     <AnimatePresence>
       {visible ? (
-        <motion.div
+        <m.div
           initial={{ y: 80 }}
           animate={{ y: 0 }}
           exit={{ y: 80 }}
@@ -47,7 +47,7 @@ export function StickyCTA() {
               Обсудить проект
             </Button>
           </div>
-        </motion.div>
+        </m.div>
       ) : null}
     </AnimatePresence>
   );

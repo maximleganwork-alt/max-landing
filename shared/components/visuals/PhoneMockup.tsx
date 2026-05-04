@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { AnimatePresence, m, useReducedMotion } from "framer-motion";
 import {
   BatteryFull,
   Bot,
@@ -109,7 +109,7 @@ export function PhoneMockup() {
         aria-hidden="true"
       />
 
-      <motion.div
+      <m.div
         animate={reduced ? undefined : { y: [0, -6, 0] }}
         transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
         className="relative h-full w-full will-change-transform [transform:translateZ(0)]"
@@ -210,7 +210,7 @@ export function PhoneMockup() {
               {visible.map((item, idx) => {
                 if (item.kind === "typing") {
                   return (
-                    <motion.div
+                    <m.div
                       key={`typing-${idx}`}
                       layout
                       initial={{ opacity: 0, y: 6 }}
@@ -221,7 +221,7 @@ export function PhoneMockup() {
                     >
                       <div className="flex items-center gap-1 rounded-2xl rounded-bl-sm bg-bg-subtle px-3 py-2.5">
                         {[0, 1, 2].map((d) => (
-                          <motion.span
+                          <m.span
                             key={d}
                             className="block h-1.5 w-1.5 rounded-full bg-fg-subtle"
                             animate={
@@ -238,13 +238,13 @@ export function PhoneMockup() {
                           />
                         ))}
                       </div>
-                    </motion.div>
+                    </m.div>
                   );
                 }
 
                 if (item.kind === "payment") {
                   return (
-                    <motion.div
+                    <m.div
                       key={`pay-${idx}`}
                       layout
                       initial={{ opacity: 0, y: 8, scale: 0.97 }}
@@ -275,13 +275,13 @@ export function PhoneMockup() {
                           </div>
                         ) : null}
                       </div>
-                    </motion.div>
+                    </m.div>
                   );
                 }
 
                 const isUser = item.from === "user";
                 return (
-                  <motion.div
+                  <m.div
                     key={`msg-${idx}`}
                     layout
                     initial={{ opacity: 0, y: 8 }}
@@ -316,7 +316,7 @@ export function PhoneMockup() {
                         </div>
                       ) : null}
                     </div>
-                  </motion.div>
+                  </m.div>
                 );
               })}
             </AnimatePresence>
@@ -346,7 +346,7 @@ export function PhoneMockup() {
             </button>
           </div>
         </div>
-      </motion.div>
+      </m.div>
     </div>
   );
 }

@@ -1,0 +1,179 @@
+---
+title: "Mini Apps initData: проверка и безопасность"
+description: "Как корректно проверять Telegram Mini App initData на сервере: HMAC, срок жизни, защита от подделки. Готовые формулы и типичные ошибки."
+date: "2025-10-27"
+tags: ["Telegram", "Mini Apps", "безопасность"]
+---
+
+`initData` — это пакет с информацией о пользователе, который Telegram передаёт Mini App при открытии. Без проверки подписи `initData` любой может подменить `user_id` и зайти от имени другого человека. Разберём, как корректно валидировать `initData` на сервере и какие ошибки приводят к компрометации.
+
+## Что такое initData
+
+При открытии Mini App Telegram прокидывает в WebView строку `initData` — закодированный URL-параметр со следующими полями:
+
+- `user` — JSON с информацией о пользователе (`id`, `first_name`, `last_name`, `username`, `language_code`, `is_premium`, `photo_url`).
+- `auth_date` — UNIX timestamp выдачи.
+- `query_id` — идентификатор сессии Mini App.
+- `start_param` — параметр, переданный в `start_param` при запуске.
+- `chat_type`, `chat_instance` — контекст чата, если Mini App открыт в группе.
+- `hash` — HMAC-SHA256 подпись всех остальных полей.
+
+Доступен в JS через `window.Telegram.WebApp.initData` (строка) и `window.Telegram.WebApp.initDataUnsafe` (распарсенный объект, без проверки!).
+
+## Почему нельзя верить initDataUnsafe
+
+`initDataUnsafe` — это просто распарсенный JSON в JS. Любой может открыть DevTools и переопределить значения. Если бэкенд верит `initDataUnsafe.user.id`, злоумышленник тривиально входит под чужим аккаунтом.
+
+Правильный путь:
+
+1. Mini App шлёт `initData` (строку) на бэкенд.
+2. Бэкенд проверяет `hash` через HMAC-SHA256 секретного ключа, выведенного из токена бота.
+3. Только после проверки доверяет `user.id`.
+
+## Алгоритм проверки
+
+Псевдокод:
+
+1. Принять `initData` как строку.
+2. Распарсить query string в map ключ-значение.
+3. Извлечь `hash`, остальные поля собрать в `data_check_string` (отсортировать ключи, формат `key=value`, соединить через `\n`).
+4. Вычислить `secret_key = HMAC_SHA256("WebAppData", bot_token)`.
+5. Вычислить `expected_hash = HMAC_SHA256(secret_key, data_check_string)`.
+6. Сравнить с `hash` из `initData` в hex.
+7. Если совпадает — данные подлинные.
+
+На Python:
+
+```python
+import hmac, hashlib
+from urllib.parse import parse_qsl
+
+def verify_init_data(init_data: str, bot_token: str) -> bool:
+    parsed = dict(parse_qsl(init_data, strict_parsing=True))
+    received_hash = parsed.pop("hash")
+    data_check_string = "\n".join(
+        f"{k}={v}" for k, v in sorted(parsed.items())
+    )
+    secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+    expected_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(received_hash, expected_hash)
+```
+
+На Node — то же самое через `crypto.createHmac`.
+
+## Срок жизни
+
+`auth_date` показывает, когда `initData` был выдан. Telegram не отзывает старые `initData`, поэтому проверять «не слишком ли старый» — обязанность сервера.
+
+Стандартная практика — отбрасывать `initData` старше 1–24 часов:
+
+```python
+if int(parsed["auth_date"]) + 86400 < time.time():
+    raise ValueError("initData expired")
+```
+
+Без этой проверки украденный `initData` живёт вечно. Особенно опасно при логировании — если `initData` попал в логи, он навсегда годен для входа.
+
+## Где проверять
+
+Каждый запрос к бэкенду от Mini App должен содержать `initData` и проверяться. Не делайте «проверил один раз при логине, выдал JWT, дальше доверяю» — JWT без обновления тоже становится украденным токеном.
+
+Реалистичные паттерны:
+
+- **Каждый запрос** проверяет `initData` свежий (валидация менее 5 минут раздумий не отнимает).
+- **Сессионный токен** выдаётся после первой проверки, живёт час, потом перезапрашивается через свежий `initData`.
+
+<InlineCTA>Разработаем Mini App за 4–8 недель</InlineCTA>
+
+## Типичные ошибки
+
+### Доверие user.id из JS
+
+```javascript
+// Неправильно
+const userId = Telegram.WebApp.initDataUnsafe.user.id;
+fetch("/api/me?user_id=" + userId);
+```
+
+Правильно — `user_id` достаётся на бэкенде из проверенного `initData`, не из параметров запроса.
+
+### Использование initData в URL
+
+`initData` не должен идти в query string GET-запросов: попадает в логи, в Referer, в браузерную историю. Передавайте через заголовок `Authorization: tma <initData>` или в JSON-теле POST.
+
+### Сортировка ключей через split
+
+Bug in many tutorials: разделяют по `&` и обнуляют значения с `&` внутри (например, `start_param=foo&bar`). Используйте библиотеку для парсинга query string, не самописный split.
+
+### Не сравнивать через constant-time
+
+`if (received_hash == expected_hash)` уязвим к timing attack. Используйте `hmac.compare_digest` (Python), `crypto.timingSafeEqual` (Node).
+
+### Хардкод bot_token
+
+Токен — секрет. Не вшивайте в код, используйте переменные окружения. Если токен утечёт, любая проверка `initData` ломается, потому что злоумышленник сможет сам подписывать.
+
+## Защита от replay
+
+Если злоумышленник перехватил `initData`, он может отправлять одни и те же запросы. Замедлить:
+
+- `auth_date` менее 1–24 часов.
+- Дополнительный `nonce` в запросе — уникальный токен, выдаваемый бэкендом, и обязательный к передаче в следующий запрос.
+- Привязка к IP — для критичных операций.
+
+## Привязка пользователя
+
+После проверки `initData` берёте `user.id` (числовой). Это и есть стабильный идентификатор пользователя в Telegram. По нему ведёте профиль, привязываете к платежам, состояниям FSM и т.д.
+
+`username` может меняться. `first_name`, `last_name` — могут меняться. `photo_url` — временный.
+
+## Mini App на чужом домене
+
+Mini App запускается с домена, который вы зарегистрировали в BotFather через `/setdomain`. Telegram проверяет, что URL входит в whitelist. Это защищает от того, чтобы кто-то открыл вашу Mini App на постороннем сайте — `initData` для другого домена выдан не будет.
+
+Для собственного бэкенда настройте CORS только под ваши домены. Не открывайте API всем подряд.
+
+## Логирование
+
+Что можно логировать:
+
+- `user_id` (числовой).
+- `query_id` (одноразовый, безопасен).
+- `auth_date`.
+
+Что нельзя:
+
+- Полный `initData`.
+- `hash`.
+- Любые токены и подписи.
+
+Утечка лога с `initData` = массовая компрометация.
+
+## Итого
+
+`initData` — это подписанный пакет данных пользователя, который Telegram передаёт Mini App. Без проверки HMAC доверять ему нельзя — `initDataUnsafe` подделывается тривиально. Алгоритм: парсим query string, собираем `data_check_string` отсортированно, считаем HMAC секретного ключа от токена бота, сравниваем через constant-time. Дополнительно проверяем `auth_date` на свежесть. Не пихайте `initData` в URL и логи, не выдавайте долгоживущие сессионные токены без проверки. Эти простые правила защищают Mini App от 99% атак на аутентификацию.
+
+<Faq>
+  <FaqItem q="Что такое initData в Telegram Mini App?">
+    При открытии Mini App Telegram прокидывает в WebView строку initData — закодированный URL-параметр со следующими полями. user — JSON с информацией о пользователе (id, first_name, last_name, username, language_code, is_premium, photo_url). auth_date — UNIX timestamp выдачи. query_id — идентификатор сессии Mini App. start_param — параметр, переданный при запуске. chat_type, chat_instance — контекст чата если в группе. hash — HMAC-SHA256 подпись всех остальных полей. Доступен в JS через window.Telegram.WebApp.initData (строка) и initDataUnsafe (распарсенный объект, без проверки).
+  </FaqItem>
+  <FaqItem q="Почему нельзя доверять initDataUnsafe в JavaScript?">
+    initDataUnsafe — это просто распарсенный JSON в JS. Любой может открыть DevTools и переопределить значения. Если бэкенд верит initDataUnsafe.user.id, злоумышленник тривиально входит под чужим аккаунтом. Правильный путь. Mini App шлёт initData (строку) на бэкенд. Бэкенд проверяет hash через HMAC-SHA256 секретного ключа, выведенного из токена бота. Только после проверки доверяет user.id. Любой запрос от Mini App, делающий что-то от имени пользователя, должен сопровождаться проверенным initData на сервере.
+  </FaqItem>
+  <FaqItem q="Как алгоритмически проверить initData на сервере?">
+    Алгоритм проверки. Принять initData как строку. Распарсить query string в map ключ-значение. Извлечь hash, остальные поля собрать в data_check_string (отсортировать ключи, формат key=value, соединить через \\n). Вычислить secret_key = HMAC_SHA256("WebAppData", bot_token). Вычислить expected_hash = HMAC_SHA256(secret_key, data_check_string). Сравнить с hash из initData в hex через constant-time (hmac.compare_digest, crypto.timingSafeEqual), не == чтобы избежать timing attack. Если совпадает — данные подлинные.
+  </FaqItem>
+  <FaqItem q="Какой срок жизни должен быть у initData в Mini App?">
+    auth_date показывает, когда initData был выдан. Telegram не отзывает старые initData, поэтому проверять «не слишком ли старый» — обязанность сервера. Стандартная практика — отбрасывать initData старше 1–24 часов. Без этой проверки украденный initData живёт вечно. Особенно опасно при логировании — если initData попал в логи, он навсегда годен для входа. Также не пихайте initData в URL GET-запросов: попадает в логи, в Referer, в браузерную историю. Передавайте через заголовок `Authorization: tma INIT_DATA` или в JSON-теле POST.
+  </FaqItem>
+  <FaqItem q="Какие типичные ошибки при работе с initData?">
+    Пять частых ошибок. Доверие user.id из JS — userId из initDataUnsafe передаётся в URL, бэкенд ему верит; правильно — user_id достаётся на бэкенде из проверенного initData. Использование initData в URL — попадает в логи и Referer, передавайте через заголовок. Сортировка ключей через split — bug in many tutorials, используйте библиотеку для парсинга. Не сравнивать через constant-time — уязвим к timing attack. Хардкод bot_token в коде — токен секрет, используйте переменные окружения.
+  </FaqItem>
+  <FaqItem q="Как защититься от replay-атак на initData в Mini App?">
+    Если злоумышленник перехватил initData, он может отправлять одни и те же запросы. Замедлить. Auth_date менее 1–24 часов. Дополнительный nonce в запросе — уникальный токен, выдаваемый бэкендом, и обязательный к передаче в следующий запрос. Привязка к IP — для критичных операций. Также Mini App запускается с домена, который вы зарегистрировали в BotFather через /setdomain. Telegram проверяет, что URL входит в whitelist. Это защищает от того, чтобы кто-то открыл вашу Mini App на постороннем сайте — initData для другого домена выдан не будет.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка проекта в течение рабочего дня.
+</EndCTA>

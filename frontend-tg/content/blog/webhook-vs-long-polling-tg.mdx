@@ -1,0 +1,368 @@
+---
+title: "Webhook vs long polling в Telegram-боте"
+description: "Webhook или long polling для Telegram-бота: что выбрать, сравнение по производительности, сложности и стоимости. Когда что использовать."
+date: "2026-03-30"
+tags: ["Telegram", "архитектура", "сравнение"]
+---
+
+Telegram Bot API даёт два способа получать обновления: long polling и webhook. Выбор влияет на архитектуру, инфраструктуру, стоимость и даже на то, можно ли вообще запустить бот в выбранном окружении (например, в serverless). Разберём оба механизма по косточкам: как работают под капотом, какие гарантии дают, где ломаются и как мигрировать с одного на другой без потери сообщений.
+
+## Как устроен long polling
+
+Long polling — это «pull-модель»: бот сам периодически дёргает Telegram API методом `getUpdates`, удерживая HTTP-соединение открытым на длительный таймаут (обычно 25–30 секунд). Telegram держит запрос «висящим», и как только в очереди появляется хотя бы одно обновление — отдаёт массив `Update` и закрывает соединение. Бот сразу шлёт следующий `getUpdates` — и так в цикле.
+
+Поток выглядит примерно так:
+
+```
+бот → GET https://api.telegram.org/bot<token>/getUpdates?offset=N&timeout=30
+     [соединение висит до 30 с]
+     ← 200 [{ update_id: N+1, ... }, { update_id: N+2, ... }]
+бот → GET .../getUpdates?offset=N+3&timeout=30
+     ...
+```
+
+Параметр `offset` — это «подтверждение» обработанных апдейтов: передавая `offset=last_update_id+1`, бот говорит Telegram «эти я забрал, можешь удалить из очереди». Если бот упал, не подтвердив, — Telegram отдаст те же апдейты следующему `getUpdates`.
+
+Вызов `getUpdates` curl-ом для отладки:
+
+```bash
+curl "https://api.telegram.org/bot$BOT_TOKEN/getUpdates?timeout=30&allowed_updates=[\"message\",\"callback_query\"]"
+```
+
+Никакого публичного домена, SSL и открытых портов не нужно — нужен только исходящий HTTPS до `api.telegram.org`. Инициатор соединения всегда бот, поэтому работает за NAT, в корпоративной сети, на ноутбуке разработчика.
+
+## Как устроен webhook
+
+Webhook — это «push-модель»: бот один раз говорит Telegram «шли все апдейты POST-ом сюда», после чего Telegram сам стучится на ваш URL при каждом новом событии.
+
+Регистрация:
+
+```bash
+curl -X POST "https://api.telegram.org/bot$BOT_TOKEN/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://bot.example.com/tg/webhook",
+    "secret_token": "k7Hg2pQwR9zX5mN8vL3jY6tF1aB4cD0e",
+    "allowed_updates": ["message", "callback_query", "inline_query"],
+    "max_connections": 40,
+    "drop_pending_updates": false
+  }'
+```
+
+После этого Telegram сам шлёт POST с JSON-телом `Update` на указанный URL, ожидая HTTP 200 в течение примерно 60 секунд. Если ответа нет или код не 2xx — апдейт уйдёт в очередь повторов с экспоненциальной задержкой.
+
+Требования Telegram к webhook URL:
+
+- HTTPS с валидным сертификатом — Let's Encrypt подходит, доверенным CA доверяют по умолчанию. Self-signed нужно явно прокидывать в `setWebhook` через параметр `certificate`.
+- Один из разрешённых портов: 443, 80, 88 или 8443. Произвольный порт не примут.
+- Публичный IP. Telegram идёт из подсетей `149.154.160.0/20` и `91.108.4.0/22` — этот IP-whitelist можно настроить на firewall, чтобы закрыть webhook от посторонних сканеров.
+- Доменное имя в URL (IP-адрес в URL не принимается).
+
+## Сравнительная таблица
+
+| Параметр | Long polling | Webhook |
+|---|---|---|
+| Модель | Pull, бот тянет | Push, Telegram шлёт |
+| Latency доставки | 200–1500 мс | 30–150 мс |
+| Throughput на инстанс | До нескольких сообщений в секунду | Сотни сообщений в секунду |
+| Публичный IP | Не нужен | Обязателен |
+| HTTPS-сертификат | Не нужен | Обязателен (Let's Encrypt OK) |
+| Порты | Только исходящий 443 | Входящий 443 / 80 / 88 / 8443 |
+| Несколько инстансов | Невозможно с одним токеном | Через load balancer |
+| Serverless | Не работает | Работает естественно |
+| Отладка локально | Запустил — работает | Нужен ngrok / cloudflared |
+| Стоимость инфраструктуры | Минимальная | Домен + SSL + публичный хост |
+| Перезапуск без потери | Через `offset` | Через очередь повторов |
+| Защита эндпоинта | Не требуется | `secret_token` + IP-whitelist |
+
+## Когда выбирать long polling
+
+Long polling — правильный выбор, когда:
+
+- **MVP и прототип**. Запустить бот за 10 минут на ноутбуке, без VPS, домена и SSL.
+- **Локальная разработка**. Проще отлаживать — не нужен ngrok или Cloudflare Tunnel, дебагер останавливает процесс без таймаутов от Telegram.
+- **Нет публичного IP**. Корпоративная сеть, NAT, домашний интернет, бот на офисном сервере без проброса портов.
+- **Малый трафик**. До нескольких сообщений в секунду long polling справляется без напряга.
+- **Однопроцессный бот**. Не нужен балансировщик, shared-storage, синхронизация состояния между инстансами.
+- **Простой деплой**. Один контейнер, без nginx, без Let's Encrypt, без cron на обновление сертификата.
+
+Главный архитектурный минус — невозможность запустить два инстанса с одним токеном. Telegram отдаст апдейт первому подключившемуся `getUpdates`, и второй инстанс начнёт «воровать» сообщения у первого. На практике вы получите рандомное распределение апдейтов и сломанные FSM-состояния.
+
+## Когда выбирать webhook
+
+Webhook — правильный выбор, когда:
+
+- **Высокий трафик**. Сотни сообщений в секунду, нужно горизонтальное масштабирование.
+- **Серверлесс**. Cloud Functions, AWS Lambda, Yandex Cloud Functions, Cloudflare Workers — long polling там не работает в принципе (нет долгоживущего процесса).
+- **Минимальная задержка**. Webhook доставляет апдейт за десятки миллисекунд против секунды у polling — критично для AI-ботов и интерактивных сценариев.
+- **Несколько инстансов за балансировщиком**. Telegram сам распределит POST-запросы по живым нодам через ваш балансер.
+- **Production-готовность**. Webhook ровно интегрируется в обычный веб-стек: nginx → app server → handler, как любой другой HTTP API.
+- **Экономия исходящего трафика**. Не нужно держать сотни RPS впустую — Telegram сам стучится только при наличии события.
+
+<InlineCTA>Поможем спроектировать архитектуру под нагрузку</InlineCTA>
+
+## secret_token и защита эндпоинта
+
+Webhook URL рано или поздно попадёт в логи, в чужие сертификатные журналы (Certificate Transparency), в DNS-историю. Чтобы посторонний с угаданным URL не мог слать поддельные апдейты, в `setWebhook` передаётся `secret_token` — произвольная строка от 1 до 256 символов из алфавита `A-Z a-z 0-9 _ -`.
+
+Telegram при каждом POST добавляет заголовок `X-Telegram-Bot-Api-Secret-Token` со значением этого секрета. Сервер обязан проверять заголовок и отбрасывать запросы без него:
+
+```python
+from fastapi import FastAPI, Request, Header, HTTPException
+import os, hmac
+
+app = FastAPI()
+SECRET = os.environ["TG_WEBHOOK_SECRET"]
+
+@app.post("/tg/webhook")
+async def webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: str | None = Header(default=None),
+):
+    if not x_telegram_bot_api_secret_token or not hmac.compare_digest(
+        x_telegram_bot_api_secret_token, SECRET
+    ):
+        raise HTTPException(status_code=403, detail="forbidden")
+    update = await request.json()
+    # быстро поставить в очередь и ответить 200
+    await enqueue(update)
+    return {"ok": True}
+```
+
+Сравнение через `hmac.compare_digest` (а не `==`) защищает от timing-атак. Дополнительный слой защиты — IP-whitelist на nginx или firewall.
+
+## allowed_updates: оптимизация трафика
+
+По умолчанию Telegram шлёт боту все типы апдейтов, кроме `chat_member`, `message_reaction` и нескольких других. Это значит — даже если ваш бот не реагирует на `edited_message` или `poll_answer`, вы всё равно получаете их POST-ом и тратите CPU на парсинг.
+
+Параметр `allowed_updates` в `setWebhook` (и `getUpdates`) отсекает ненужные типы на стороне Telegram:
+
+```bash
+curl -X POST "https://api.telegram.org/bot$BOT_TOKEN/setWebhook" \
+  -d "url=https://bot.example.com/tg/webhook" \
+  -d 'allowed_updates=["message","callback_query"]'
+```
+
+Для типичного бота с командами и инлайн-кнопками достаточно `message` и `callback_query`. Если используете inline-режим — добавьте `inline_query`. Если есть Mini App с платежами — `pre_checkout_query` и `successful_payment` (через `message`).
+
+## Пример: webhook на FastAPI + nginx
+
+Минимальный продакшен-стек: nginx терминирует TLS и проксирует на FastAPI/Uvicorn, FastAPI быстро складывает апдейт в очередь (Redis/RabbitMQ/asyncio.Queue) и отвечает 200. Тяжёлая работа — в фоновом воркере.
+
+nginx-конфиг:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name bot.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/bot.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/bot.example.com/privkey.pem;
+
+    # Telegram subnets
+    allow 149.154.160.0/20;
+    allow 91.108.4.0/22;
+    deny all;
+
+    location /tg/webhook {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 60s;
+        client_max_body_size 1m;
+    }
+}
+```
+
+FastAPI-handler из примера выше принимает POST, проверяет `secret_token`, кладёт апдейт в очередь и отвечает 200 за миллисекунды. Воркер в отдельном процессе разбирает очередь и вызывает обработчики.
+
+## Пример: long polling на aiogram
+
+Для aiogram 3.x минимальный polling-бот выглядит так:
+
+```python
+import asyncio
+import os
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message
+from aiogram.filters import CommandStart
+
+bot = Bot(token=os.environ["BOT_TOKEN"])
+dp = Dispatcher()
+
+@dp.message(CommandStart())
+async def start(msg: Message):
+    await msg.answer("Привет!")
+
+@dp.message(F.text)
+async def echo(msg: Message):
+    await msg.answer(msg.text)
+
+async def main():
+    await bot.delete_webhook(drop_pending_updates=False)
+    await dp.start_polling(
+        bot,
+        allowed_updates=["message", "callback_query"],
+    )
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+`delete_webhook` обязателен перед стартом polling: если на боте висит активный webhook, `getUpdates` вернёт ошибку 409 Conflict. На grammY (TypeScript) аналогично — `bot.api.deleteWebhook()` плюс `bot.start()`.
+
+## Local-tunnel для разработки webhook
+
+Если архитектурно вы уже на webhook, но хочется отладить обработчик локально с дебагером — нужен туннель, выставляющий ваш `localhost:8000` наружу с HTTPS-URL.
+
+Популярные варианты:
+
+- **ngrok**: `ngrok http 8000` → выдаёт URL вида `https://abcd-1-2-3-4.ngrok-free.app`. Бесплатный план меняет URL при каждом старте.
+- **cloudflared**: `cloudflared tunnel --url http://localhost:8000` → стабильный URL `*.trycloudflare.com`. Бесплатно, без лимитов на трафик.
+- **localtunnel**: `lt --port 8000` → URL `*.loca.lt`. Простой, но нестабильный.
+- **bore / frp**: self-hosted решения, если есть свой VPS с доменом.
+
+После запуска туннеля — `setWebhook` с полученным URL и тем же `secret_token`, что в локальном `.env`.
+
+<InlineCTA>Развернём прод-инфраструктуру под бота за неделю</InlineCTA>
+
+## Миграция с polling на webhook без потери сообщений
+
+Самый частый сценарий: бот рос на polling, теперь нужно мигрировать на webhook без даунтайма и потери апдейтов. Алгоритм:
+
+1. **Подготовить webhook-инстанс**, не запуская его. Развернуть HTTPS-эндпоинт, проверить, что отвечает 200 на тестовый POST.
+2. **Не трогать polling-инстанс пока**. Он продолжает работать.
+3. **Остановить polling-процесс** командой деплоя. Последний `getUpdates` вернёт пустой массив или висит до таймаута.
+4. **Дренировать очередь**: один раз вызвать `getUpdates?offset=last+1&timeout=0` чтобы подтвердить все обработанные апдейты.
+5. **Вызвать `setWebhook`** с новым URL, `secret_token` и `drop_pending_updates=false` — чтобы накопившиеся за минуту переключения апдейты пришли webhook-у.
+6. **Запустить webhook-инстанс**, проверить через `getWebhookInfo`, что `pending_update_count` уменьшается до нуля.
+
+Окно простоя — секунды. Если использовать `drop_pending_updates=true`, потеряете апдейты, накопившиеся между шагами 3 и 5.
+
+Обратная миграция (webhook → polling) такая же: `deleteWebhook` → `start_polling`. `getUpdates` сразу подхватит pending-очередь, если её не сбросили.
+
+## Несколько инстансов: polling нельзя, webhook можно
+
+Long polling с одним токеном на нескольких инстансах работать не будет — Telegram отдаёт каждый апдейт ровно одному `getUpdates`-запросу, и это будет случайный инстанс. FSM-состояния между ними не синхронизируются, бот ведёт себя непредсказуемо.
+
+Webhook масштабируется естественно: ставим N инстансов за nginx или HAProxy, балансер раздаёт POST-ы. Что важно учесть:
+
+- **Идемпотентность по `update_id`**. При сетевом сбое Telegram может ретраить тот же `update_id` — храните обработанные ID (Redis SET с TTL 24 часа) и пропускайте дубли.
+- **Shared FSM-storage**. Состояния пользователей — в Redis или Postgres, не в памяти процесса.
+- **Sticky sessions не нужны**. Любой инстанс должен уметь обработать любой `update_id`.
+- **Graceful shutdown**. При раскатке нового релиза старый инстанс должен дообработать текущие POST-ы, а не убиваться SIGKILL.
+
+## Webhook в serverless
+
+Serverless-платформы (Vercel, Cloudflare Workers, AWS Lambda, Yandex Cloud Functions) подходят для webhook идеально: нет долгоживущего процесса, оплата за инвокацию, автоскейлинг из коробки. Но есть особенности:
+
+- **Cold start**. Первый POST после простоя может занять 200–2000 мс на инициализацию рантайма. Telegram это переживёт, но пользователь почувствует задержку. Cloudflare Workers и Yandex Cloud Functions cold start меньше 100 мс — там терпимо.
+- **Таймаут платформы**. Vercel Hobby — 10 секунд, AWS Lambda — до 15 минут, Cloudflare Workers — 30 секунд CPU-time. Тяжёлые операции всё равно выносим в отдельную очередь (SQS, Cloudflare Queues, Yandex Message Queue).
+- **Stateless**. FSM и сессии — обязательно во внешнем хранилище. KV-store (Cloudflare KV, Vercel KV, Yandex YDB) идеально для этого.
+- **Логирование**. У serverless-платформ свой стек логов; интеграция с Sentry или externals — отдельная настройка.
+- **Лимиты на размер тела**. Telegram присылает апдейты до ~1 МБ (фото-сообщения с длинной подписью). Большинство платформ это переваривают, но проверьте лимит.
+
+## Мониторинг webhook
+
+Главная команда для диагностики webhook — `getWebhookInfo`:
+
+```bash
+curl "https://api.telegram.org/bot$BOT_TOKEN/getWebhookInfo"
+```
+
+Ответ:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "url": "https://bot.example.com/tg/webhook",
+    "has_custom_certificate": false,
+    "pending_update_count": 0,
+    "max_connections": 40,
+    "ip_address": "203.0.113.10",
+    "last_error_date": 1709123456,
+    "last_error_message": "SSL error: Hostname mismatch",
+    "allowed_updates": ["message", "callback_query"]
+  }
+}
+```
+
+На что смотреть:
+
+- **`pending_update_count`** — сколько апдейтов в очереди Telegram. Растёт — значит webhook не отвечает 200 или не успевает.
+- **`last_error_date` / `last_error_message`** — последняя ошибка доставки. Типичные: `Wrong response from the webhook: 502`, `Connection timed out`, `SSL error`.
+- **`ip_address`** — IP, на который Telegram сейчас резолвит ваш домен. После переезда DNS должен обновиться в течение минут.
+- **`max_connections`** — лимит параллельных POST-ов от Telegram (1–100, по умолчанию 40). Поднимаем при больших нагрузках.
+
+В прод-мониторинг закладываем алерт на `pending_update_count > 50` и любое непустое `last_error_message`.
+
+## Подводные камни webhook
+
+Webhook кажется проще, но прячет неочевидные проблемы:
+
+1. **Время ответа на POST**. Telegram считает webhook упавшим, если ответ не пришёл за ~60 секунд, и повторит апдейт. Тяжёлые операции выносим в фон, в HTTP-обработчике делаем только приём и постановку в очередь.
+2. **Идемпотентность**. Telegram может прислать один апдейт повторно при сбоях — храните `update_id` обработанных апдейтов.
+3. **Безопасность**. Эндпоинт публичный — `secret_token` обязателен, IP-whitelist желателен.
+4. **Сертификат**. Self-signed нужно явно прокидывать в `setWebhook`. Проще получать Let's Encrypt — Telegram доверяет ему по умолчанию, но не забудьте про автообновление (`certbot renew`).
+5. **CORS не помогает**. Telegram шлёт server-to-server, никакие CORS-заголовки не защищают.
+
+## Подводные камни long polling
+
+Long polling тоже не бесплатный:
+
+- При обрыве сети `getUpdates` нужно корректно перезапускать с экспоненциальным бэкоффом, иначе бот молчит до перезапуска. Фреймворки делают это сами, самописный цикл — нет.
+- При ошибке в обработке апдейта надо аккуратно обрабатывать исключения — иначе теряются последующие сообщения.
+- Несколько инстансов с одним токеном работать не будут.
+- При большой нагрузке `getUpdates` может вернуть до 100 апдейтов за раз — обработчик должен либо параллелить, либо не лагать на одном тяжёлом сообщении.
+
+Большинство фреймворков (aiogram, grammY, python-telegram-bot, telebot) обрабатывают эти случаи из коробки.
+
+## Гибрид и переключение
+
+В жизненном цикле бота нормально переходить с long polling на webhook. Локальная разработка и dev-стенд — long polling, продакшен — webhook. Между ними переключаемся через переменную окружения и одну из двух веток запуска: `start_polling()` vs `setup_webhook(...)`.
+
+```python
+if os.getenv("BOT_MODE") == "webhook":
+    await bot.set_webhook(
+        url=os.environ["WEBHOOK_URL"],
+        secret_token=os.environ["WEBHOOK_SECRET"],
+        allowed_updates=["message", "callback_query"],
+    )
+    # запускаем aiohttp/FastAPI приложение
+else:
+    await bot.delete_webhook()
+    await dp.start_polling(bot)
+```
+
+## Итого
+
+Long polling — для прототипов, локальной разработки, ботов за NAT и малых сценариев с одним инстансом. Webhook — для продакшена, серверлесса, высоких нагрузок и горизонтального масштабирования. Большинство современных ботов в проде используют webhook, но переход на него имеет смысл, когда инфраструктура уже есть — для MVP старт с long polling нормален, миграция на webhook занимает несколько часов и проводится без потери апдейтов через корректный `deleteWebhook` → дренаж → `setWebhook`.
+
+<Faq>
+  <FaqItem q="Чем long polling отличается от webhook в Telegram?">
+    Long polling — клиент сам опрашивает Telegram через getUpdates, удерживая HTTP-соединение открытым до 30 секунд, пока сервер не вернёт обновления. Это pull-модель: бот сам забирает события, не требует публичного домена и SSL — нужен только исходящий HTTPS до api.telegram.org. Webhook — Telegram сам шлёт POST-запрос на указанный URL при появлении нового апдейта. Бот должен иметь публичный HTTPS-эндпоинт с валидным сертификатом на одном из разрешённых портов (443, 80, 88 или 8443). Push-модель: события приходят сами, инициатор соединения — Telegram.
+  </FaqItem>
+  <FaqItem q="Когда выбирать long polling для Telegram-бота?">
+    Long polling — правильный выбор для MVP и прототипа (запустить за 10 минут на ноутбуке без VPS), локальной разработки (проще отлаживать, не нужен ngrok), при отсутствии публичного IP (корпоративная сеть, NAT, домашний интернет), при малом трафике (несколько сообщений в секунду), для однопроцессного бота без необходимости горизонтального масштабирования. Главный минус — нельзя запустить два инстанса с одним токеном: они начнут воровать апдейты друг у друга и FSM-состояния поломаются.
+  </FaqItem>
+  <FaqItem q="Когда выбирать webhook для Telegram-бота?">
+    Webhook — правильный выбор для высокого трафика (сотни сообщений в секунду, нужно горизонтальное масштабирование), для serverless (Cloud Functions, AWS Lambda, Yandex Cloud Functions, Cloudflare Workers — long polling там не работает в принципе), при требовании минимальной задержки (десятки миллисекунд против секунды у polling), при нескольких инстансах за балансировщиком, для production-готовности с интеграцией в обычный веб-стек nginx → app server → handler.
+  </FaqItem>
+  <FaqItem q="Какие требования у Telegram к webhook URL?">
+    HTTPS с валидным сертификатом — Let's Encrypt подходит, доверенным CA доверяют по умолчанию. Self-signed нужно явно прокидывать в setWebhook через параметр certificate. Один из разрешённых портов: 443, 80, 88 или 8443, произвольный порт не примут. Публичный IP с доменным именем (IP-адрес в URL не принимается). Telegram шлёт POST-ы из подсетей 149.154.160.0/20 и 91.108.4.0/22 — этот whitelist можно настроить на firewall. Эндпоинт должен отвечать 200 в течение примерно 60 секунд, иначе апдейт уйдёт в очередь повторов.
+  </FaqItem>
+  <FaqItem q="Зачем нужен secret_token в setWebhook?">
+    Webhook URL рано или поздно попадёт в логи, в Certificate Transparency, в DNS-историю. Чтобы посторонний с угаданным URL не мог слать поддельные апдейты, в setWebhook передаётся secret_token — произвольная строка от 1 до 256 символов. Telegram при каждом POST добавляет заголовок X-Telegram-Bot-Api-Secret-Token со значением этого секрета. Сервер обязан проверять заголовок и отбрасывать запросы без него или с неверным значением — через constant-time сравнение (hmac.compare_digest), а не через обычное равенство, чтобы защититься от timing-атак.
+  </FaqItem>
+  <FaqItem q="Как мигрировать с polling на webhook без потери сообщений?">
+    Алгоритм. Подготовить webhook-инстанс не запуская его — развернуть HTTPS-эндпоинт, проверить что отвечает 200. Не трогать polling-инстанс пока, он продолжает работать. Остановить polling-процесс командой деплоя. Дренировать очередь — один раз вызвать getUpdates с offset=last+1 и timeout=0, чтобы подтвердить все обработанные апдейты. Вызвать setWebhook с новым URL, secret_token и drop_pending_updates=false — чтобы накопившиеся за минуту переключения апдейты пришли webhook-у. Запустить webhook-инстанс, проверить через getWebhookInfo, что pending_update_count уменьшается до нуля. Окно простоя — секунды.
+  </FaqItem>
+  <FaqItem q="Как мониторить здоровье webhook?">
+    Главная команда — getWebhookInfo. Возвращает url, has_custom_certificate, pending_update_count (сколько апдейтов в очереди Telegram, растёт — значит webhook не отвечает 200 или не успевает), last_error_date и last_error_message (последняя ошибка доставки: Wrong response from the webhook 502, Connection timed out, SSL error), ip_address (IP куда Telegram сейчас резолвит домен), max_connections (лимит параллельных POST-ов, 1 до 100, по умолчанию 40), allowed_updates. В прод-мониторинг закладываем алерт на pending_update_count больше 50 и любое непустое last_error_message.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка в течение рабочего дня.
+</EndCTA>

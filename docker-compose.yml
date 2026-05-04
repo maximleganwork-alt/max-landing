@@ -6,13 +6,17 @@
 #   │  nginx (host pkg, :80/:443)           │
 #   │     ├─ max.<domain> → 127.0.0.1:3001  │
 #   │     ├─ tg.<domain>  → 127.0.0.1:3002  │
-#   │     └─ web.<domain> → 127.0.0.1:3003  │
+#   │     ├─ web.<domain> → 127.0.0.1:3003  │
+#   │     └─ api.<domain> → 127.0.0.1:8080  │
 #   │                                       │
 #   │  ┌──── docker network: botmax ─────┐  │
 #   │  │  frontend-max  :3000  ──────────┼──┼─→ 127.0.0.1:3001
 #   │  │  frontend-tg   :3000  ──────────┼──┼─→ 127.0.0.1:3002
 #   │  │  frontend-web  :3000  ──────────┼──┼─→ 127.0.0.1:3003
-#   │  │  backend       :8080  (internal only — frontends call http://backend:8080)
+#   │  │  backend       :8080  ──────────┼──┼─→ 127.0.0.1:8080 (api.<domain>)
+#   │  │                                   (frontends still call http://backend:8080
+#   │  │                                    over the docker network — public endpoint
+#   │  │                                    is for external clients only)
 #   │  └─────────────────────────────────┘  │
 #   └───────────────────────────────────────┘
 #
@@ -45,6 +49,10 @@ services:
     env_file: .env
     environment:
       PORT: "8080"
+    # Bind on loopback so host nginx can proxy api.<domain> → 127.0.0.1:8080.
+    # Frontends still call the backend via docker DNS (http://backend:8080).
+    ports:
+      - "127.0.0.1:8080:8080"
     networks:
       - botmax
     healthcheck:

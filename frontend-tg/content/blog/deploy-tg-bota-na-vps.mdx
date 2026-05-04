@@ -1,0 +1,161 @@
+---
+title: "Деплой Telegram-бота на VPS пошагово"
+description: "Как развернуть Telegram-бот на VPS: Docker, nginx, SSL, systemd. Подготовка сервера, защита, обновления. Пошаговая инструкция и подводные камни."
+date: "2026-03-14"
+tags: ["Telegram", "разработка", "инфраструктура"]
+---
+
+VPS — самый частый вариант хостинга бота: дешевле облачных функций, гибче shared-хостинга, контроля больше, чем у managed-сервисов. Разберём, как развернуть бот на чистом VPS Ubuntu и не забыть критичные шаги.
+
+## Выбор VPS
+
+Минимальная конфигурация для типового бота: 1–2 vCPU, 2 ГБ RAM, 20–40 ГБ SSD. Этого хватит на 1–10k активных пользователей в день. AI-бот с локальной моделью или большим Redis-state — от 4 ГБ RAM.
+
+География — критичный момент. Бот в России обычно живёт у российских хостеров (Selectel, Timeweb, Yandex Cloud). Bot API доступен из России без особых усилий. Если бот зависит от сторонних API, проверяйте доступность из выбранного региона.
+
+## Подготовка сервера
+
+После создания VPS и подключения по SSH:
+
+1. Обновляем пакеты: `apt update && apt upgrade -y`.
+2. Создаём отдельного пользователя (не работаем под root): `adduser deploy`, добавляем в `sudo`.
+3. Настраиваем SSH-ключи и отключаем парольную аутентификацию в `/etc/ssh/sshd_config`.
+4. Включаем UFW: `ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw enable`.
+5. Ставим Docker и docker-compose-plugin по официальной инструкции.
+6. Настраиваем swap, если RAM ≤ 2 ГБ — это спасёт сборку Next.js или больших Python-зависимостей.
+
+Без этих шагов бот «работает», но любая случайная атака подбора паролей или нехватка памяти превращается в инцидент.
+
+## Структура проекта
+
+Стандартный набор:
+
+- `Dockerfile` — multi-stage сборка: builder ставит зависимости, runtime копирует только нужное.
+- `docker-compose.yml` — описывает бот, Redis, Postgres, всё через `restart: unless-stopped`.
+- `.env` — секреты (`BOT_TOKEN`, `REDIS_URL`, `DB_URL`). В git **никогда** не коммитим, держим только в `.env.example`.
+- `deploy/nginx/bot.conf` — конфиг nginx для webhook’а.
+- `Makefile` или `deploy.sh` — команды `make deploy`, `make logs`, `make migrate`.
+
+Container-first подход даёт воспроизводимость: на ноутбуке и на VPS бот собирается одинаково.
+
+## Webhook и nginx
+
+Webhook требует публичный HTTPS. Самая простая схема — nginx на хосте, контейнер с ботом слушает на 127.0.0.1:8080.
+
+```nginx
+server {
+    server_name bot.example.com;
+    listen 443 ssl http2;
+    location /webhook/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+SSL через Let’s Encrypt: `certbot --nginx -d bot.example.com`. Сертификат продлевается автоматически через cron/systemd таймер.
+
+Для долгих операций увеличиваем `proxy_read_timeout 60s` — Telegram считает webhook упавшим после 60 секунд.
+
+<InlineCTA>Поможем спроектировать архитектуру под нагрузку</InlineCTA>
+
+## Запуск через docker compose
+
+Минимальный `docker-compose.yml`:
+
+```yaml
+services:
+  bot:
+    build: .
+    env_file: .env
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on: [redis, postgres]
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    volumes: [redis_data:/data]
+    restart: unless-stopped
+  postgres:
+    image: postgres:16-alpine
+    env_file: .env
+    volumes: [pg_data:/var/lib/postgresql/data]
+    restart: unless-stopped
+volumes:
+  redis_data:
+  pg_data:
+```
+
+Поднимаем: `docker compose up -d --build`. Логи: `docker compose logs -f bot`. Перезапуск после деплоя: `docker compose restart bot`.
+
+## Обновления и CI/CD
+
+Минимальный CI/CD без сложных инструментов: на push в `main` GitHub Actions собирает образ, пушит в registry, заходит на VPS по SSH и делает `docker compose pull && docker compose up -d`.
+
+Альтернативно — `deploy.sh` на сервере, который делает `git pull && docker compose up -d --build`. Подходит для команды из 1–2 человек.
+
+В обоих случаях критично: миграции БД до старта новой версии, healthcheck перед переключением трафика, откат на предыдущий образ при сбое.
+
+## Бэкапы
+
+Бот без бэкапа — бот, ждущий первой потери данных. Минимум:
+
+1. Дамп Postgres каждый день (`pg_dump`), хранить 7–30 дней.
+2. Снимок Redis (если в нём есть критичные данные) раз в час.
+3. Архивы загруженных пользователями файлов на S3-совместимое хранилище.
+4. Отдельный экземпляр бэкапов в другом регионе.
+
+Раз в квартал тренируем восстановление: разворачиваем бэкап на тестовом стенде. Бэкап, который вы не пробовали восстановить, не считается.
+
+## Мониторинг и алерты
+
+Минимум для VPS-бота:
+
+- `docker compose ps` через cron, алерт на упавшие контейнеры.
+- `df -h`, `free -h` через node_exporter + Prometheus.
+- Sentry на ошибки кода.
+- Healthcheck-эндпоинт `/health`, дёргаемый снаружи (UptimeRobot, Healthchecks.io).
+
+Алерты — в Telegram-канал команды или Slack. Приходящий в 3 часа ночи pager — реальность для команд с продуктом.
+
+## Безопасность
+
+Краткий чек-лист:
+
+1. Только SSH-ключи, без паролей.
+2. Файрвол: открыты только нужные порты.
+3. fail2ban для ssh и nginx.
+4. Регулярные обновления (`unattended-upgrades`).
+5. Секреты в `.env`, права 600, владелец `deploy`.
+6. Бот-токен ротируем при компрометации (`/revoke` в BotFather, новый токен).
+7. webhook-secret в setWebhook + проверка в обработчике.
+
+## Итого
+
+VPS-деплой бота — это Docker + nginx + Let’s Encrypt + бэкапы + мониторинг. Собрать всё это можно за один день, поддерживать — около часа в неделю. Альтернативы (PaaS, серверлесс) проще на старте, но дороже и менее гибки на росте. Для большинства проектов VPS — оптимальный баланс.
+
+<Faq>
+  <FaqItem q="Какой VPS нужен для Telegram-бота?">
+    Минимальная конфигурация для типового бота: 1–2 vCPU, 2 ГБ RAM, 20–40 ГБ SSD. Этого хватит на 1–10k активных пользователей в день. AI-бот с локальной моделью или большим Redis-state — от 4 ГБ RAM. География — критичный момент. Бот в России обычно живёт у российских хостеров (Selectel, Timeweb, Yandex Cloud). Bot API доступен из России без особых усилий. Если бот зависит от сторонних API (OpenAI, Stripe), проверяйте доступность из выбранного региона перед выбором хостера. Для AI-проектов часто берут Yandex Cloud для VM рядом с YandexGPT.
+  </FaqItem>
+  <FaqItem q="Как подготовить VPS Ubuntu для Telegram-бота?">
+    Шесть шагов после создания и подключения по SSH. Обновляем пакеты: apt update && apt upgrade -y. Создаём отдельного пользователя (не работаем под root): adduser deploy, добавляем в sudo. Настраиваем SSH-ключи и отключаем парольную аутентификацию в /etc/ssh/sshd_config. Включаем UFW: ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw enable. Ставим Docker и docker-compose-plugin по официальной инструкции. Настраиваем swap, если RAM ≤ 2 ГБ — это спасёт сборку Next.js или больших Python-зависимостей от OOM-killer.
+  </FaqItem>
+  <FaqItem q="Как настроить webhook через nginx и Let's Encrypt?">
+    Webhook требует публичный HTTPS. Самая простая схема — nginx на хосте, контейнер с ботом слушает на 127.0.0.1:8080. Конфиг nginx с server_name bot.example.com, listen 443 ssl http2, location /webhook/ с proxy_pass http://127.0.0.1:8080 и заголовками X-Forwarded-For, X-Real-IP. SSL через Let's Encrypt: certbot --nginx -d bot.example.com. Сертификат продлевается автоматически через cron/systemd таймер. Для долгих операций увеличиваем proxy_read_timeout 60s — Telegram считает webhook упавшим после 60 секунд.
+  </FaqItem>
+  <FaqItem q="Как организовать docker-compose для Telegram-бота?">
+    Минимальный docker-compose.yml содержит три сервиса. Bot — собирается из Dockerfile, env_file: .env, ports 127.0.0.1:8080:8080, depends_on Redis и Postgres, restart unless-stopped. Redis — image redis:7-alpine, volume redis_data:/data. Postgres — image postgres:16-alpine, env_file .env, volume pg_data:/var/lib/postgresql/data. Поднимаем: docker compose up -d --build. Логи: docker compose logs -f bot. Перезапуск после деплоя: docker compose restart bot. Container-first подход даёт воспроизводимость: на ноутбуке и на VPS бот собирается одинаково.
+  </FaqItem>
+  <FaqItem q="Как организовать бэкапы и восстановление бота на VPS?">
+    Бот без бэкапа — бот, ждущий первой потери данных. Минимум четыре пункта. Дамп Postgres каждый день (pg_dump), хранить 7–30 дней. Снимок Redis (если в нём есть критичные данные) раз в час. Архивы загруженных пользователями файлов на S3-совместимое хранилище. Отдельный экземпляр бэкапов в другом регионе для защиты от потери дата-центра. Раз в квартал тренируем восстановление: разворачиваем бэкап на тестовом стенде. Бэкап, который вы не пробовали восстановить, не считается. Регулярная проверка ловит проблемы с битыми архивами заранее.
+  </FaqItem>
+  <FaqItem q="Что включает чек-лист безопасности Telegram-бота на VPS?">
+    Семь пунктов. Только SSH-ключи, без паролей. Файрвол: открыты только нужные порты (22, 80, 443). Fail2ban для ssh и nginx. Регулярные обновления (unattended-upgrades). Секреты в .env, права 600, владелец deploy. Бот-токен ротируем при компрометации (/revoke в BotFather, новый токен). Webhook-secret в setWebhook + проверка в обработчике через X-Telegram-Bot-Api-Secret-Token. Это базовая гигиена, которая защищает от 90% типовых атак: подбор паролей по ssh, брутфорс webhook, сканирование портов.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка проекта в течение рабочего дня.
+</EndCTA>

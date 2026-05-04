@@ -1,0 +1,425 @@
+---
+title: "Как защитить Telegram-бота от спама, флуда и атак"
+description: "Разбираем основные векторы атак на Telegram-бот: спам, флуд, перебор форм, фрод. Как защититься rate-limit, captcha и архитектурными решениями."
+date: "2025-12-22"
+tags: ["Telegram", "безопасность", "автоматизация"]
+---
+
+Любой публичный Telegram-бот рано или поздно сталкивается со спамом, перебором форм и попытками вывести его из строя. Если в боте есть платежи или интеграция с CRM, цена пробоя растёт кратно: фрод-заявки, забитые менеджеры, испорченная аналитика, кассовые потери. В этом посте — карта реальных угроз и проверенный набор контрмер: от CAPTCHA при `/start` до WAF на webhook и поведенческой аналитики. Все примеры — из продовых ботов, которые успели поймать на себе как минимум одну массовую атаку.
+
+## Карта угроз: что реально атакуют
+
+Угрозы делятся на три класса: технические (DDoS, парсинг), экономические (накрутка, фрод платежей) и репутационные (спам в группах, фишинг). Ниже — сводная таблица того, что встречается чаще всего у клиентских ботов.
+
+| Угроза | Цель атакующего | Что страдает |
+|---|---|---|
+| Накрутка `/start` | Раздуть базу, сорвать аналитику | CRM, маркетинг, биллинг провайдера |
+| Scrape базы пользователей | Собрать ID для последующего спама | Пользователи, GDPR/152-ФЗ |
+| Abuse платных функций | Купить за бесплатно | Касса, баланс провайдеров |
+| DDoS на webhook | Положить сервис | Доступность, SLA |
+| Спам в групповых чатах | Реклама/фишинг под видом бота | Репутация, удаление из чатов |
+| Фишинг через бота | Угнать аккаунты у юзеров | Доверие, юр-риски |
+| Prompt-injection (LLM) | Получить системный промпт, обойти политику | Конфиденциальность, биллинг OpenAI |
+
+Дальше — слой за слоем, от входной точки до бэкенда.
+
+## CAPTCHA при /start: отсеиваем сборщиков
+
+Основная цель массового флуда `/start` — собрать как можно больше валидных `chat_id`, которым потом можно спамить. CAPTCHA внутри бота снижает «дешевизну» атаки на порядок: бот-сборщик должен либо обучить решатель, либо подключить antigate-сервис.
+
+Минимальный вариант — кнопочная CAPTCHA с TTL 60 секунд:
+
+```python
+import random
+from aiogram import Router, F
+from aiogram.filters import CommandStart
+from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+
+router = Router()
+PENDING = {}  # chat_id -> (correct_button, expires_at)
+
+@router.message(CommandStart())
+async def on_start(msg: Message):
+    a, b = random.randint(2, 9), random.randint(2, 9)
+    correct = a + b
+    options = sorted({correct, correct + 1, correct - 2, correct + 3})
+    random.shuffle(options)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=str(o), callback_data=f"cap:{o}")
+        for o in options
+    ]])
+    PENDING[msg.chat.id] = (correct, msg.date.timestamp() + 60)
+    await msg.answer(f"Подтвердите, что вы человек: сколько будет {a} + {b}?", reply_markup=kb)
+```
+
+Если пользователь не нажал в течение TTL — мягкий бан на 24 часа. Если ошибся трижды — то же самое. Реальные пользователи проходят с первого раза, сборщики отваливаются.
+
+Для веб-Mini App или внешней посадочной страницы используйте Yandex SmartCaptcha — она ловит ботов до того, как они доходят до Telegram.
+
+## Rate limiting per user через Redis Lua
+
+Token bucket на уровне `chat_id` — обязательный слой. Без него один пользователь может за секунду отправить 30 callback-ов и положить вашу очередь обработки. Решение — атомарный Lua-скрипт в Redis (избегаем гонок и round-trip-ов):
+
+```lua
+-- KEYS[1] = bucket key, ARGV = capacity, refill_per_sec, now_ms, cost
+local key = KEYS[1]
+local capacity = tonumber(ARGV[1])
+local refill = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local cost = tonumber(ARGV[4])
+
+local data = redis.call("HMGET", key, "tokens", "ts")
+local tokens = tonumber(data[1]) or capacity
+local ts = tonumber(data[2]) or now
+
+local delta = (now - ts) / 1000.0 * refill
+tokens = math.min(capacity, tokens + delta)
+
+if tokens < cost then
+  redis.call("HMSET", key, "tokens", tokens, "ts", now)
+  redis.call("PEXPIRE", key, 60000)
+  return 0
+end
+
+tokens = tokens - cost
+redis.call("HMSET", key, "tokens", tokens, "ts", now)
+redis.call("PEXPIRE", key, 60000)
+return 1
+```
+
+Использование из Python:
+
+```python
+async def allow(chat_id: int, cost: int = 1) -> bool:
+    res = await redis.evalsha(
+        SHA, 1, f"rl:user:{chat_id}",
+        20,    # capacity
+        2,     # refill per sec (2 msg/s, burst 20)
+        int(time.time() * 1000),
+        cost,
+    )
+    return bool(res)
+```
+
+Дорогие операции (создание заявки, генерация LLM-ответа, отправка СМС) проходят с `cost=5` — они быстрее съедают бюджет.
+
+## Rate limiting per IP на webhook
+
+Telegram отправляет апдейты с фиксированных IP-диапазонов, но в реальности webhook доступен всему интернету. Если кто-то узнал ваш URL (а он рано или поздно засветится), его начнут долбить запросами без подписи.
+
+Лимит на IP должен стоять до бизнес-логики — на уровне Nginx или edge:
+
+```nginx
+limit_req_zone $binary_remote_addr zone=tg_webhook:10m rate=30r/s;
+
+location /tg/webhook {
+    limit_req zone=tg_webhook burst=60 nodelay;
+    limit_req_status 429;
+
+    proxy_pass http://app_upstream;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+Параллельно — IP-allowlist Telegram (диапазоны опубликованы) или WAF (Cloudflare, Yandex). Это убирает 90% мусорного трафика до того, как он касается приложения.
+
+## secret_token: подпись webhook от Telegram
+
+Bot API позволяет задать секретный токен при `setWebhook`. Telegram присылает его в заголовке `X-Telegram-Bot-Api-Secret-Token` — всё, что без него или с неверным, отбрасываем.
+
+```python
+import hmac
+import os
+from fastapi import FastAPI, Header, HTTPException, Request
+
+SECRET = os.environ["TG_WEBHOOK_SECRET"]
+app = FastAPI()
+
+@app.post("/tg/webhook")
+async def webhook(
+    req: Request,
+    x_telegram_bot_api_secret_token: str = Header(default=""),
+):
+    if not hmac.compare_digest(x_telegram_bot_api_secret_token, SECRET):
+        raise HTTPException(status_code=403, detail="bad secret")
+    update = await req.json()
+    await dispatcher.feed_raw_update(update)
+    return {"ok": True}
+```
+
+Сравнение строго через `compare_digest` — иначе timing attack теоретически позволит подобрать секрет.
+
+<InlineCTA>Защитим ваш бот от спама и фрода</InlineCTA>
+
+## Поведенческая аналитика и Telegram-сигналы
+
+Не все боты тупые. Серьёзный сборщик решит CAPTCHA через antigate и пройдёт rate-limit. Здесь спасают сигналы аккаунта и паттерны поведения.
+
+Telegram-специфичные сигналы, которые стоит логировать на каждом первом контакте:
+
+- `user.id` — приблизительный возраст аккаунта (старые ID — меньше; есть открытые таблицы соответствия `id` → дата регистрации).
+- `is_premium` — премиум-аккаунты редко участвуют в массовых атаках.
+- `language_code` — несоответствие гео и языка часто индикатор.
+- наличие фото профиля — `getUserProfilePhotos` (одноразово при первом контакте).
+- `username` — пустой username + свежий ID + нет фото = подозрительно.
+
+Поведенческие паттерны:
+
+- много `/start` подряд без интерактива в течение N часов;
+- ноль текстовых сообщений, только нажатия кнопок;
+- регистрация из дата-центров (по IP webhook-обращения, если Mini App);
+- аномально быстрые ответы (меньше 200 мс на сложный экран).
+
+Простая «scoring»-модель:
+
+```python
+def risk_score(user, signals) -> int:
+    score = 0
+    if not user.username: score += 10
+    if not signals["has_photo"]: score += 10
+    if user.id > 7_000_000_000: score += 15  # совсем свежий
+    if signals["lang"] != signals["geo_lang"]: score += 20
+    if signals["start_count_24h"] > 5: score += 30
+    if signals["msg_to_callback_ratio"] < 0.05: score += 25
+    return score
+
+# >= 50 — shadow-ban, 30..49 — повторная CAPTCHA, < 30 — пропускаем
+```
+
+Shadow-ban — отдельный приём: пользователю отвечаем как будто всё нормально, но действия в реальности не выполняются. Атакующий не понимает, что забанен, и не пересоздаёт аккаунт.
+
+## Anti-spam в групповых чатах
+
+Если бот — админ группы, на нём и обязанность чистить мусор. Минимальный набор:
+
+- словарный фильтр (мат, спам-фразы, сезонные кампании);
+- проверка ссылок (whitelist доменов или scoring);
+- CAPTCHA для новых участников (кнопочная, с TTL и киком);
+- лимит на N сообщений в M секунд от одного юзера;
+- автокик за `chat_join_request` без последующей активности 24 часа.
+
+Пример декоратора для антиспам-проверки сообщения:
+
+```python
+from functools import wraps
+
+SPAM_WORDS = {"казино", "крипто-сигналы", "1xbet", ...}
+LINK_RE = re.compile(r"https?://([^\s/]+)")
+WHITELIST = {"t.me", "telegram.org", "company.ru"}
+
+def antispam(handler):
+    @wraps(handler)
+    async def wrapper(msg: Message, *args, **kwargs):
+        text = (msg.text or msg.caption or "").lower()
+        if any(w in text for w in SPAM_WORDS):
+            await msg.delete()
+            await mute_user(msg.chat.id, msg.from_user.id, hours=24)
+            return
+        for host in LINK_RE.findall(text):
+            if host not in WHITELIST:
+                await msg.delete()
+                return
+        return await handler(msg, *args, **kwargs)
+    return wrapper
+```
+
+Ловушка: не удаляйте сообщения админов и доверенных аккаунтов — иначе бот будет выгребать собственные напоминания.
+
+## Защита от парсинга базы пользователей
+
+Если в боте есть «найти пользователя по никнейму» или «показать профиль соседа» — это потенциальный enum-эндпоинт. Атакующий за ночь соберёт всю базу.
+
+Меры:
+
+- Никогда не возвращайте инфу о других пользователях по числовому `id` (только по их же действиям, в их сессии).
+- Рандомизируйте задержки ответов на «поиск» — добавьте 200–800 мс случайно. Это не убивает UX, но ломает массовый перебор.
+- Не отвечайте «не найдено» — отвечайте идентично «найдено, но скрыто», чтобы сборщик не отделял существующие ID от несуществующих.
+- Лимит на N запросов поиска в сутки.
+
+```python
+import asyncio, random
+
+async def search_user_by_username(actor_id, query):
+    if not allow(actor_id, cost=3):
+        return GENERIC_LIMIT_RESPONSE
+    await asyncio.sleep(random.uniform(0.2, 0.8))
+    user = await db.find(query)
+    # одинаковый ответ для found / not found
+    return GENERIC_PROFILE_HIDDEN
+```
+
+## Защита платных функций: idempotency + double-spend
+
+Любое действие, которое тратит деньги (купить подписку, заказать доставку, списать с баланса), должно быть идемпотентным. Иначе ретрай webhook от Telegram задвоит заказ, а атакующий сможет «параллельно» дважды списать одну транзакцию.
+
+```python
+async def charge_and_grant(user_id: int, item_id: str, amount: int, idem_key: str):
+    async with db.transaction():
+        # 1. блокируем idempotency-ключ
+        existing = await db.fetchrow(
+            "INSERT INTO payments (idem_key, user_id, item_id, amount, status) "
+            "VALUES ($1,$2,$3,$4,'pending') ON CONFLICT (idem_key) DO NOTHING "
+            "RETURNING id", idem_key, user_id, item_id, amount,
+        )
+        if existing is None:
+            return await db.fetchval(
+                "SELECT status FROM payments WHERE idem_key = $1", idem_key
+            )
+
+        # 2. серверная проверка цены — НЕ доверяем клиенту
+        real_price = PRICE_TABLE[item_id]
+        if amount != real_price:
+            await mark_failed(idem_key, "price_mismatch")
+            raise FraudError(f"price tampered: got {amount}, expected {real_price}")
+
+        # 3. атомарное списание
+        ok = await db.execute(
+            "UPDATE balances SET amount = amount - $1 "
+            "WHERE user_id = $2 AND amount >= $1", amount, user_id,
+        )
+        if ok == "UPDATE 0":
+            await mark_failed(idem_key, "insufficient_funds")
+            raise InsufficientFundsError()
+
+        await grant_item(user_id, item_id)
+        await mark_success(idem_key)
+        return "success"
+```
+
+Ключевое: сумма берётся с сервера по `item_id`, а не из `pre_checkout_query.total_amount`. Idem-ключ — обычно `f"{user_id}:{item_id}:{tg_payment_charge_id}"`.
+
+## Логирование, алерты и security-канал
+
+Всю подозрительную активность пишите в отдельный лог (или Sentry breadcrumbs с тегом `security`). Это нужно не «на всякий», а чтобы за час понять масштаб инцидента.
+
+Что обязательно логировать:
+
+- срабатывания rate-limit (chat_id, IP, endpoint);
+- неудачные CAPTCHA;
+- shadow-баны и автоматические муты;
+- price_mismatch в платежах;
+- 4xx/5xx на webhook;
+- `risk_score >= 30`.
+
+Алерты — на резкие отклонения, не на пороги. Полезные правила:
+
+- всплеск `/start` > 5σ от 7-дневного среднего за 5 минут;
+- доля shadow-баненных юзеров за час > 10%;
+- аномалия по гео (внезапно 60% трафика из одной страны, которой обычно 2%);
+- новый `callback_data`, которого нет в кодовой базе (попытка fuzz-инга).
+
+В Prometheus метрики складываются в 3–4 строки:
+
+```python
+from prometheus_client import Counter, Histogram
+
+started_total = Counter("bot_start_total", "starts", ["risk_bucket"])
+ratelimit_hits = Counter("bot_ratelimit_total", "rate-limit hits", ["scope"])
+captcha_fails = Counter("bot_captcha_fail_total", "captcha fails")
+payment_fraud = Counter("bot_payment_fraud_total", "fraud detected", ["reason"])
+```
+
+<InlineCTA>Сделаем мониторинг и алерты вашего бота</InlineCTA>
+
+## Чёрный список и shadow-ban
+
+Хранить простой Redis-set с `user_id` забаненных:
+
+```python
+async def is_banned(user_id: int) -> bool:
+    return bool(await redis.sismember("ban:hard", user_id))
+
+async def is_shadow(user_id: int) -> bool:
+    return bool(await redis.sismember("ban:shadow", user_id))
+
+# Middleware
+async def ban_middleware(handler, event, data):
+    uid = event.from_user.id
+    if await is_banned(uid):
+        return  # тихо игнорируем
+    if await is_shadow(uid):
+        # отвечаем заглушкой, действий не делаем
+        if isinstance(event, Message):
+            await event.answer("Готово ✅")
+        return
+    return await handler(event, data)
+```
+
+Hard-ban — для подтверждённых ботов и фрода. Shadow-ban — для подозрительных, но непонятных случаев. Истёк — снимается автоматически по TTL.
+
+## Юр-нюансы: оферта и отказ в обслуживании
+
+Бот для платных услуг — это публичная оферта (ст. 437 ГК РФ). Отказ в обслуживании без оснований может быть оспорен, поэтому в условиях оферты явно пропишите:
+
+- право отказа при подозрении на автоматизированную активность;
+- право блокировки за нарушение правил пользования;
+- хранение логов и причин блокировки 6+ месяцев;
+- порядок обжалования (контактный email).
+
+Для 152-ФЗ — IP, `user_id`, поведенческие сигналы тоже считаются персональными данными в широкой трактовке РКН. Учитывайте это в политике обработки.
+
+## Pen-testing бота: OWASP Top-10 для ботов
+
+Перед запуском прогоните бот по чек-листу:
+
+| Категория OWASP | Проверка для бота |
+|---|---|
+| Broken Access Control | Можно ли получить чужой профиль/заказ по ID? |
+| Cryptographic Failures | Токен в env, не в git, маска в логах? |
+| Injection | SQL/NoSQL/LLM-injection в полях форм? |
+| Insecure Design | Есть ли rate-limit на дорогие операции? |
+| Security Misconfiguration | secret_token, CORS, IP-allowlist? |
+| Vulnerable Components | aiogram/grammy/telegraf свежие? |
+| Auth Failures | initData проверяется на каждом запросе Mini App? |
+| Data Integrity | Idempotency на платежах? |
+| Logging Failures | Security-лог + алерты есть? |
+| SSRF | Бот ходит во внешние URL по запросу юзера? |
+
+Полезные инструменты: `pip-audit` / `npm audit`, Semgrep с правилами для Python+Telegram, ручной fuzzing callback_data через свой второй бот.
+
+## Библиотеки и сервисы
+
+Что брать в стек:
+
+| Задача | Python | Node.js |
+|---|---|---|
+| Bot framework | aiogram 3, python-telegram-bot | grammy, telegraf |
+| Rate-limit | redis + Lua, slowapi | rate-limiter-flexible, bottleneck |
+| Validation | pydantic v2 | zod |
+| WAF/edge | Cloudflare, Yandex | то же |
+| Secrets | Vault, Yandex Lockbox | то же |
+| Monitoring | Sentry, Prometheus, Grafana | то же |
+| LLM-safety | guardrails, llm-guard | то же |
+
+## Итого
+
+Защита Telegram-бота — это слоёная конструкция, и каждый слой ловит свой класс угроз. CAPTCHA при `/start` и поведенческая аналитика отсекают накрутку базы. Rate-limit per user и per IP гасит флуд. `secret_token`, IP-allowlist и WAF защищают webhook. Idempotency и серверная проверка цен закрывают платежи. Shadow-ban и security-канал помогают реагировать на атаки в реальном времени. Ни один слой по отдельности не покрывает всё, но вместе они снижают риски на 95–99%. Закладывать защиту имеет смысл с самого начала проекта — переписывать дороже, чем спроектировать сразу, особенно если бот уже принимает деньги.
+
+<Faq>
+  <FaqItem q="Какие основные угрозы для Telegram-бота нужно учитывать?">
+    Угрозы делятся на три класса. Технические: накрутка регистраций через массовый /start, scrape базы пользователей через enum-эндпоинты, DDoS на webhook, парсинг через групповые чаты. Экономические: abuse платных функций (подмена суммы или ID товара в pre_checkout_query), double-spend через ретраи, фрод-заявки в формах. Репутационные: спам в чатах, где бот админ, фишинг через бота, prompt-injection в LLM-ботах. Отдельный класс — утечка токена бота, после которой нужен /revoke в BotFather. Защита нужна слоями: для каждой угрозы свой механизм, ни один слой по отдельности не закрывает всё.
+  </FaqItem>
+  <FaqItem q="Как сделать CAPTCHA при /start, не убив конверсию?">
+    Минимальный вариант — кнопочная CAPTCHA с TTL 60 секунд: показываем простую арифметику (сколько 3+5) с 4 кнопками, правильная даёт доступ. Не нажал в TTL или ошибся 3 раза — мягкий бан на 24 часа. Реальные пользователи проходят с первого раза, сборщики отваливаются. Если бот идёт по входящей воронке (трафик с сайта), CAPTCHA внутри бота избыточна — поставьте Yandex SmartCaptcha на посадке до перехода в бот. Для случайного органического трафика CAPTCHA внутри бота обязательна, иначе за вечер базу накачают десятками тысяч пустых регистраций.
+  </FaqItem>
+  <FaqItem q="Как организовать rate-limit на двух уровнях — пользователь и IP?">
+    Per user: token bucket в Redis через Lua-скрипт (атомарность, нет round-trip). Параметры: capacity 20, refill 2 токена/сек, дорогие операции стоят 5 токенов. Хранится в ключе rl:user:CHAT_ID. Per IP: ставится на уровне Nginx или edge до бизнес-логики через limit_req_zone с rate 30r/s burst 60. Это убирает мусорный трафик до приложения. Дополнительно — IP-allowlist Telegram (диапазоны опубликованы) или WAF Cloudflare/Yandex. Лимиты сохраняются в Redis, поэтому переживают рестарт приложения и работают между инстансами при горизонтальном масштабировании.
+  </FaqItem>
+  <FaqItem q="Как защитить webhook от подделки запросов?">
+    Используйте параметр secret_token при setWebhook. Telegram присылает значение в заголовке X-Telegram-Bot-Api-Secret-Token, всё без него или с неверным значением отбрасываем. Сравнение строго через hmac.compare_digest, не через ==, иначе теоретически возможна timing attack. Параллельно: HTTPS обязателен (Telegram не отправит на HTTP), IP-allowlist Telegram-диапазонов, WAF на уровне edge, rate-limit per IP в Nginx. CSRF-защита для webhook не нужна, потому что нет браузерных кук. Replay-атаки гасятся idempotency_key в платёжных операциях.
+  </FaqItem>
+  <FaqItem q="Какие поведенческие сигналы помогают вычислить ботов-сборщиков?">
+    Telegram-специфичные сигналы: возраст аккаунта по числу user.id (свежие ID > 7 млрд подозрительны), отсутствие фото профиля, пустой username, премиум-флаг (премиум редко в массовых атаках), несоответствие language_code и гео. Поведенческие: много /start подряд без интерактива, нулевая доля текстовых сообщений при куче нажатий кнопок, аномально быстрые ответы (меньше 200 мс), регистрация из IP дата-центров. Простая scoring-модель суммирует баллы: больше 50 — shadow-ban, 30..49 — повторная CAPTCHA, меньше 30 — пропускаем. Shadow-ban особенно эффективен: пользователь думает, что работает, но действия не выполняются, и атакующий не пересоздаёт аккаунт.
+  </FaqItem>
+  <FaqItem q="Как защитить платежи от подмены суммы и double-spend?">
+    Главное правило: никогда не доверяйте total_amount из pre_checkout_query или из клиента. Сумма берётся с сервера по item_id из таблицы цен. Хранение корзины — на сервере, не в Mini App. Идемпотентность: уникальный idem_key (например user_id плюс item_id плюс tg_payment_charge_id), вставляется в таблицу payments через INSERT ON CONFLICT DO NOTHING — если уже есть, возвращаем прошлый статус. Атомарное списание баланса через UPDATE balances SET amount = amount - X WHERE amount больше или равно X — атомарно проверяем достаточность средств. Все отклонения (price_mismatch, double_spend, insufficient_funds) логируются в security-канал и идут на алерт.
+  </FaqItem>
+  <FaqItem q="Что делать при утечке токена Telegram-бота и как её предотвратить?">
+    Токен Bot API — root вашего бота. При утечке любой может писать от имени бота, читать обновления, удалять webhook. Единственный способ восстановить — /revoke в BotFather, бот получит новый токен. Профилактика: никогда не коммитьте токен в git (используйте git-secrets, gitleaks в pre-commit), храните в Vault/Yandex Lockbox/AWS Secrets, в логах только маска (****), ротация после ухода каждого, кто имел доступ к проду. Параллельно ставьте secret_token на webhook — даже с украденным API-токеном злоумышленник не сможет имитировать апдейты от Telegram. Мониторьте Telegram getMe раз в минуту: если ответ внезапно меняется (новое имя бота), значит токен уже у кого-то и идёт перенастройка.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка в течение рабочего дня.
+</EndCTA>

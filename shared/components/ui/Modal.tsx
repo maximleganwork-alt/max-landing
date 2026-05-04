@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, m } from "framer-motion";
 import { X } from "lucide-react";
 import { cn } from "../../lib/utils";
 
@@ -76,7 +76,7 @@ export function Modal({
     <AnimatePresence>
       {open ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
-          <motion.div
+          <m.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -85,7 +85,7 @@ export function Modal({
             className="absolute inset-0 bg-black/60 backdrop-blur-sm"
             aria-hidden="true"
           />
-          <motion.div
+          <m.div
             ref={dialogRef}
             role="dialog"
             aria-modal="true"
@@ -117,7 +117,7 @@ export function Modal({
               <p className="mt-2 text-body text-fg-muted">{description}</p>
             ) : null}
             <div className={cn(title || description ? "mt-6" : "")}>{children}</div>
-          </motion.div>
+          </m.div>
         </div>
       ) : null}
     </AnimatePresence>,

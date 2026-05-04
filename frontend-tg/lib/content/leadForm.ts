@@ -20,8 +20,8 @@ export const leadFormContent: LeadFormContent = {
       icon: MessageCircle,
       iconBgClass: "bg-gradient-to-br from-[#5b8dff] to-[#8b5cf6] text-white",
       title: "Написать в MAX",
-      subtitle: "@botmax_studio",
-      href: "https://max.ru/@botmax_studio",
+      subtitle: "Открыть чат",
+      href: "https://max.ru/u/f9LHodD0cOKjUd8UClXenOZwU5qXWJ9wt6FCPLR7Ha3GUJ4fhkE5RJJ-rLo",
       goal: "direct_message_click_max",
     },
     {

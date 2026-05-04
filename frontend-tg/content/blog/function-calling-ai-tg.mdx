@@ -1,0 +1,416 @@
+---
+title: "Function calling в AI-боте Telegram"
+description: "Как через function calling связать LLM и реальные действия в Telegram-боте: проверка остатков, оформление заказа, поиск по базе и интеграция с CRM."
+date: "2026-03-02"
+tags: ["Telegram", "AI", "разработка"]
+---
+
+Function calling превращает языковую модель в исполнительный слой бота. Пользователь пишет «отмени заказ 1245», LLM возвращает структурированный вызов `cancel_order(id=1245)`, а бэкенд бота уже дёргает API магазина. Без function calling AI-бот умеет только болтать — с ним он становится полноценным интерфейсом к данным и действиям.
+
+Разберём, как это устроено технически: какие модели поддерживают tool use, как описывать функции, как организовать цикл вызова, как защититься от галлюцинаций аргументов и что делать с параллельными вызовами.
+
+## Что такое function calling
+
+Function calling — это режим работы LLM, в котором модель вместо текстового ответа возвращает структурированный JSON с именем функции и аргументами. Вы заранее передаёте список доступных функций (имя, описание, JSON-схема параметров), модель смотрит на запрос пользователя и решает: ответить текстом или вызвать функцию.
+
+Главный сдвиг по сравнению с «голой» LLM — детерминированность. Раньше приходилось парсить ответ регулярками («извлеки номер заказа из текста ответа») или просить модель вернуть JSON по шаблону, надеясь, что она не сломает кавычки. С function calling провайдер гарантирует валидный JSON, соответствующий вашей схеме.
+
+## Чем отличается от агентов
+
+Часто путают function calling и AI-агентов. Function calling — это примитив: один шаг «модель решила вызвать инструмент». Агент — это надстройка, в которой модель крутит цикл «думай → действуй → наблюдай» (паттерн ReAct), сама планирует подзадачи, держит scratchpad и решает, когда остановиться.
+
+В Telegram-боте 80% сценариев решаются обычным function calling без полноценного агента. Агент нужен там, где надо комбинировать 5-10 инструментов в неочевидном порядке: ресёрч, исследование данных, сложная отладка. Для бронирования стола или проверки статуса заказа агент — оверкилл, который добавляет латентность и стоимость.
+
+## Поддержка у моделей
+
+Все крупные провайдеры поддерживают function calling, но API отличаются:
+
+- **OpenAI** (`tools` + `tool_choice`, GPT-4o, GPT-4-turbo, GPT-3.5-turbo): поддержка `parallel_tool_calls` — модель за один шаг возвращает несколько вызовов, исполняемых параллельно. Также есть `strict: true` для гарантированного соответствия JSON Schema.
+- **Anthropic Claude** (`tool_use` блоки в `content`, Sonnet/Opus/Haiku 3.5+): аналогично parallel tool use, плюс возможность `disable_parallel_tool_use`.
+- **GigaChat** (Сбер): поле `functions` в запросе, модель возвращает `function_call`. Поддерживает русские описания «из коробки», но parallel calls пока ограничены.
+- **YandexGPT**: function calling в режиме `function_call` через Yandex Cloud SDK; зрелость API ниже, чем у OpenAI/Anthropic.
+- **Open-source** (Qwen2.5, Llama-3.1, Mistral): Qwen2.5-Instruct и Llama-3.1-Instruct отлично понимают function calling в формате OpenAI; нужно использовать tokenizer chat template или библиотеку вроде `vllm` с `--enable-auto-tool-choice`.
+
+В Telegram-боте удобно прятать различия за абстракцией: ваш код работает с типом `Tool`, а адаптер переводит его в формат конкретного провайдера. Это позволяет потом сравнивать модели по цене/качеству без переписывания логики.
+
+## JSON Schema для описания функций
+
+Имя, описание и JSON-схема параметров — единственное, что видит модель. Чем точнее описание, тем меньше галлюцинаций.
+
+```json
+{
+  "name": "get_order_status",
+  "description": "Возвращает статус заказа по его номеру. Использовать только если пользователь явно назвал номер (4-7 цифр).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "order_id": {
+        "type": "integer",
+        "description": "Номер заказа из 4-7 цифр",
+        "minimum": 1000
+      }
+    },
+    "required": ["order_id"],
+    "additionalProperties": false
+  }
+}
+```
+
+Несколько правил из практики:
+
+1. Описание — строго на языке пользователя. Если бот русскоязычный, описывайте на русском.
+2. Никогда не передавайте в схему чувствительные параметры вроде `user_id` — берите их из `message.from.id` на сервере.
+3. Для перечислений используйте `enum`, иначе модель будет придумывать значения.
+4. Возвращайте из функции компактный JSON. Тысяча строк лога на вход модели — это и токены, и риск утечки.
+5. Указывайте `additionalProperties: false` и `required` явно. Без этого модель добавляет «полезные» поля от себя.
+
+## Цикл вызова
+
+Стандартный цикл «запрос → tool_calls → выполнение → результат → финальный ответ»:
+
+```text
+User: "отмени заказ 1245"
+  │
+  ▼
+LLM(messages, tools)
+  │
+  └─► assistant: tool_calls=[{name: cancel_order, args: {id: 1245}}]
+        │
+        ▼
+      execute_tool(name, args) → {"ok": true, "refund": 5400}
+        │
+        ▼
+      messages += [tool_result]
+        │
+        ▼
+      LLM(messages, tools)
+        │
+        └─► assistant: "Заказ 1245 отменён, возврат 5400 ₽ придёт за 3-5 дней."
+              │
+              ▼
+            User
+```
+
+Важно отделить три слоя: транспорт Telegram (aiogram, grammY, python-telegram-bot), оркестратор LLM и слой инструментов с типизированными аргументами. Если смешать — тестировать невозможно.
+
+## Применение в Telegram-ботах
+
+Сценарии, где function calling реально окупается:
+
+- **Бронирование** (ресторан, барбершоп, врач): `check_availability(date, party_size)` + `make_booking(slot_id, name, phone)`. Пользователь пишет «забронируй на двоих в субботу вечером», модель сама вызывает обе функции последовательно.
+- **CRM и продажи**: `create_lead(name, phone, source)`, `update_status(lead_id, status)`, `add_note(lead_id, text)`. Менеджер диктует боту в чат, бот заполняет карточку.
+- **Поиск по базе знаний**: `search_kb(query, top_k)` возвращает фрагменты, дальше модель отвечает с цитатами. Это RAG-паттерн в обёртке function calling.
+- **Поддержка заказов**: `get_order_status`, `cancel_order`, `request_return`, `get_invoice`.
+- **Внутренние боты**: `deploy(service, env)`, `grant_access(user, repo)`, `report(period)` — DevOps-команды через чат.
+
+Альтернатива — прописывать кнопки и слоты вручную. Это работает для линейных сценариев, но ломается, когда пользователь пишет свободным текстом и комбинирует действия.
+
+<InlineCTA>Поможем спроектировать архитектуру</InlineCTA>
+
+## Большой пример на aiogram + OpenAI
+
+Минимальный handler на aiogram 3 с четырьмя функциями. Сильно сокращён ради читаемости — в проде нужны структурированное логирование, ретраи, типизация через Pydantic.
+
+```python
+import json
+from aiogram import Router, F
+from aiogram.types import Message
+from openai import AsyncOpenAI
+
+router = Router()
+client = AsyncOpenAI()
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "create_order",
+            "description": "Создать заказ на товар по артикулу.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sku": {"type": "string"},
+                    "qty": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "required": ["sku", "qty"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_status",
+            "description": "Проверить статус заказа по номеру.",
+            "parameters": {
+                "type": "object",
+                "properties": {"order_id": {"type": "integer"}},
+                "required": ["order_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_order",
+            "description": "Отменить заказ. Только заказы в статусе new/paid.",
+            "parameters": {
+                "type": "object",
+                "properties": {"order_id": {"type": "integer"}},
+                "required": ["order_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_help",
+            "description": "Подсказка по доступным командам бота.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+]
+
+
+async def execute_tool(name: str, args: dict, user_id: int) -> str:
+    if name == "create_order":
+        order = await orders_api.create(user_id=user_id, **args)
+        return json.dumps({"ok": True, "order_id": order.id, "total": order.total})
+    if name == "check_status":
+        order = await orders_api.get(args["order_id"])
+        if order.user_id != user_id:
+            return json.dumps({"error": "forbidden"})
+        return json.dumps({"status": order.status, "eta": order.eta})
+    if name == "cancel_order":
+        order = await orders_api.get(args["order_id"])
+        if order.user_id != user_id:
+            return json.dumps({"error": "forbidden"})
+        if order.status not in ("new", "paid"):
+            return json.dumps({"error": "cannot_cancel", "status": order.status})
+        await orders_api.cancel(order.id)
+        return json.dumps({"ok": True, "refund": order.total})
+    if name == "get_help":
+        return json.dumps({"commands": ["новый заказ", "статус заказа", "отмена"]})
+    return json.dumps({"error": "unknown_tool"})
+
+
+@router.message(F.text)
+async def on_text(message: Message):
+    history = await load_history(message.chat.id)
+    history.append({"role": "user", "content": message.text})
+
+    for _ in range(5):
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=history,
+            tools=TOOLS,
+            tool_choice="auto",
+        )
+        msg = response.choices[0].message
+        history.append(msg.model_dump(exclude_none=True))
+
+        if not msg.tool_calls:
+            await message.answer(msg.content)
+            break
+
+        for call in msg.tool_calls:
+            args = json.loads(call.function.arguments)
+            result = await execute_tool(
+                call.function.name, args, user_id=message.from_user.id
+            )
+            history.append(
+                {"role": "tool", "tool_call_id": call.id, "content": result}
+            )
+    else:
+        await message.answer("Не удалось завершить запрос, попробуйте позже.")
+
+    await save_history(message.chat.id, history)
+```
+
+Цикл `for _ in range(5)` ограничивает количество шагов — без этого модель может застрять в бесконечном вызове функций.
+
+## Безопасность
+
+Function calling — это удалённое выполнение функций по запросу пользователя. Поэтому:
+
+- **Whitelist по роли**. Админ-функции вроде `refund_order` или `grant_admin` не должны быть видны модели в диалоге обычного клиента. Формируйте `TOOLS` динамически от `user.role`.
+- **Валидация аргументов после модели**. LLM может вернуть `order_id: -1`, строку вместо числа, заведомо длинный SKU. Проверяйте через Pydantic/zod, а не «модель же гарантирует».
+- **Авторизация на уровне функции**. В примере выше `cancel_order` сверяет `order.user_id` с `message.from_user.id`. Нельзя верить модели — она с радостью отменит чужой заказ, если в истории мелькнул его номер.
+- **Идемпотентность**. Запросы на возврат, отмену, списание бонусов оформляйте через ключ идемпотентности — модель иногда вызывает функцию дважды.
+- **Тайм-аут**. Каждая функция должна возвращать ответ менее чем за 5-10 секунд, иначе диалог рассыпается.
+- **Sandboxing для опасных операций**. Если функция выполняет код (например, `run_python`), запускайте через изолированный воркер с ограничением CPU/памяти/сети.
+
+```python
+from pydantic import BaseModel, Field, ValidationError
+
+class CancelArgs(BaseModel):
+    order_id: int = Field(ge=1000, le=9_999_999)
+
+try:
+    args = CancelArgs.model_validate_json(call.function.arguments)
+except ValidationError as e:
+    return json.dumps({"error": "invalid_args", "details": str(e)})
+```
+
+## Стриминг с tool calls
+
+Стриминг с function calling — отдельная боль. Модель шлёт `tool_calls` дельтами: сначала имя функции, потом аргументы по кускам. Их нужно собирать в буфер по индексу, и только когда `finish_reason == "tool_calls"`, исполнять.
+
+```python
+buffers: dict[int, dict] = {}
+
+stream = await client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=history,
+    tools=TOOLS,
+    stream=True,
+)
+
+async for chunk in stream:
+    delta = chunk.choices[0].delta
+    if delta.content:
+        await edit_message(message, delta.content)  # инкрементальный вывод
+    for tc in delta.tool_calls or []:
+        buf = buffers.setdefault(tc.index, {"name": "", "args": "", "id": ""})
+        if tc.id:
+            buf["id"] = tc.id
+        if tc.function.name:
+            buf["name"] += tc.function.name
+        if tc.function.arguments:
+            buf["args"] += tc.function.arguments
+
+    if chunk.choices[0].finish_reason == "tool_calls":
+        for idx, buf in buffers.items():
+            args = json.loads(buf["args"])
+            await execute_tool(buf["name"], args, user_id)
+```
+
+В Telegram стримить промежуточные дельты можно через `editMessageText`, но не чаще 1 раза в секунду — иначе словите rate limit `429`.
+
+## Параллельные tool calls
+
+Если модель вернула несколько `tool_calls` сразу (`parallel_tool_calls=true`), исполняйте их параллельно через `asyncio.gather`. Часто это `check_availability` для нескольких дат или `get_product` для нескольких артикулов.
+
+```python
+import asyncio
+
+results = await asyncio.gather(
+    *[execute_tool(c.function.name, json.loads(c.function.arguments), user_id)
+      for c in msg.tool_calls],
+    return_exceptions=True,
+)
+for call, result in zip(msg.tool_calls, results):
+    if isinstance(result, Exception):
+        result = json.dumps({"error": "exception", "msg": str(result)})
+    history.append({"role": "tool", "tool_call_id": call.id, "content": result})
+```
+
+Важно: каждому `tool_call` должен соответствовать ровно один `tool` message в истории, иначе следующий запрос к OpenAI отвалится с `400`.
+
+## Типичные ошибки
+
+- **Hallucinated arguments**. Модель придумывает `order_id: 12345`, которого нет в системе. Решение — возвращать в `tool_result` явное `{"error": "not_found"}`, модель сама переспросит у пользователя.
+- **Бесконечные циклы**. Модель снова и снова вызывает одну и ту же функцию с теми же аргументами. Лимит шагов (`for _ in range(5)`) обязателен.
+- **Retry без backoff**. Если функция падает с `503`, повторяйте 2-3 раза с экспоненциальной задержкой; не бомбите upstream.
+- **Слишком много функций**. Больше 15-20 функций в одном `tools` — модель путается и токены плывут. Группируйте по доменам и переключайте набор функций по контексту диалога.
+- **Несинхронные имена функций**. Если в проде переименовали `cancelOrder` в `cancel_order`, а в истории остались старые `tool_call`, модель удивится.
+
+```python
+import asyncio, random
+
+async def call_with_retry(fn, *args, attempts=3):
+    for i in range(attempts):
+        try:
+            return await fn(*args)
+        except TransientError:
+            if i == attempts - 1:
+                raise
+            await asyncio.sleep(2 ** i + random.random())
+```
+
+<InlineCTA>Сделаем AI-бота за 6-10 недель</InlineCTA>
+
+## Память и контекст
+
+Telegram отдаёт `chat_id` и `user_id` — этого достаточно, чтобы хранить историю в Redis или Postgres. На вход модели обычно достаточно последних 8-12 сообщений плюс компактный summary более ранних. Не пихайте в контекст полные карточки товаров — кладите только `id` и название, а детальную информацию подтягивайте через функцию `get_product_details`.
+
+`tool_call_id` обязательно сохраняйте в истории, иначе при перезапуске воркера и подгрузке истории из Redis модель не свяжет вызов с результатом и упадёт с ошибкой формата.
+
+## Стоимость
+
+Каждый вызов функции — это минимум два запроса к LLM. На GPT-4-class моделях средняя задержка диалога 2-4 секунды, на быстрых (Haiku, GPT-4o-mini, GigaChat-Lite) — менее секунды. Чтобы держать счёт за токены под контролем:
+
+- Кэшируйте system prompt и описание функций. У большинства провайдеров есть prompt caching, который снижает стоимость повторного контекста на 50-90%. У Anthropic — `cache_control: ephemeral` на блоках, у OpenAI — автоматический cache на префиксах от 1024 токенов.
+- Для типовых вопросов ставьте классификатор перед LLM: если запрос подпадает под FAQ, отвечайте шаблоном без модели.
+- Логируйте каждый вызов: токены на вход, токены на выход, имя функции, время. Без этого оптимизация невозможна.
+- Описание функций — это тоже токены. 20 функций по 200 токенов описания = 4000 токенов на каждый запрос. Считайте.
+
+## Тестирование
+
+AI-функционал ломается не как обычный код. Заведите датасет из 100-200 реальных диалогов и прогоняйте его при каждом изменении промпта или схемы функции. Метрики: доля корректных вызовов функций, доля корректных аргументов, доля «вежливых отказов», когда модель не находит подходящего инструмента.
+
+Юнит-тесты на сами функции пишутся обычным способом, с моками upstream. А вот связку «модель + tools» удобно тестировать через мок LLM-клиента, который возвращает заранее заготовленные `tool_calls`:
+
+```python
+import pytest
+from unittest.mock import AsyncMock
+
+@pytest.mark.asyncio
+async def test_cancel_flow(monkeypatch):
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create.side_effect = [
+        FakeResponse(tool_calls=[
+            FakeToolCall(id="c1", name="cancel_order", arguments='{"order_id": 1245}')
+        ]),
+        FakeResponse(content="Заказ 1245 отменён."),
+    ]
+    monkeypatch.setattr("bot.client", mock_client)
+
+    msg = make_message(text="отмени 1245", user_id=42)
+    await on_text(msg)
+
+    assert "отменён" in msg.answers[-1]
+    assert mock_client.chat.completions.create.call_count == 2
+```
+
+## Альтернативы
+
+- **Structured outputs** (`response_format` с JSON Schema) у OpenAI: модель возвращает строго JSON по схеме, без концепции «инструментов». Удобно для извлечения данных (получить из текста `{name, phone, date}`), но не для исполнения действий.
+- **Constrained generation** (Outlines, llguidance, BAML): то же самое для open-source моделей через ограничение токенов на уровне sampler. Гарантия валидного JSON даже на маленьких моделях.
+- **Кодогенерация** (CodeAct): вместо JSON-вызовов модель пишет Python-код, который вы исполняете в sandbox. Гибче function calling, но опаснее и сложнее.
+
+Function calling остаётся золотой серединой: проще, чем агенты, гибче, чем кнопки, безопаснее, чем кодогенерация.
+
+## Итого
+
+Function calling — это мост между LLM и бизнес-данными. Он окупается там, где у клиента много свободного текста и много типовых действий: поддержка, заказы, внутренние операции. Залог стабильной работы — компактные описания функций, жёсткая валидация аргументов на сервере, авторизация на уровне функции (не верить `user_id` от модели), whitelisting по ролям, лимит шагов и регулярный прогон датасета. Начинать стоит с 3-5 функций и постепенно расширять, иначе модель тонет в выборе.
+
+<Faq>
+  <FaqItem q="Что такое function calling в Telegram-боте?">
+    Механизм, превращающий языковую модель в исполнительный слой бота. Пользователь пишет «отмени заказ 1245», LLM возвращает структурированный вызов cancel_order(id=1245), а бэкенд бота уже дёргает API магазина. Без function calling AI-бот умеет только болтать — с ним он становится полноценным интерфейсом к данным и действиям. Сценарии: поддержка (бот ищет тикет в Zendesk, статус в 1С), продажи (расчёт цены, проверка остатков, бронь слота), внутренние боты (запуск деплоя, открытие доступа, выгрузка отчёта).
+  </FaqItem>
+  <FaqItem q="Чем function calling отличается от AI-агента?">
+    Function calling — примитив: один шаг «модель решила вызвать инструмент». Агент — надстройка с циклом «думай → действуй → наблюдай» (ReAct), планированием подзадач и scratchpad. В Telegram-боте 80% сценариев решаются обычным function calling без полноценного агента. Агент нужен там, где надо комбинировать 5-10 инструментов в неочевидном порядке: ресёрч, исследование данных, сложная отладка. Для бронирования или статуса заказа агент — оверкилл, добавляющий латентность и стоимость.
+  </FaqItem>
+  <FaqItem q="Какие модели поддерживают function calling?">
+    Все крупные провайдеры. OpenAI (tools и parallel_tool_calls, GPT-4o, GPT-4-turbo, GPT-3.5-turbo) с режимом strict для JSON Schema. Anthropic Claude (tool_use блоки в content, Sonnet/Opus/Haiku 3.5+) с parallel tool use. GigaChat (поле functions, function_call), русские описания работают из коробки. YandexGPT (function_call через Yandex Cloud SDK). Open-source: Qwen2.5-Instruct и Llama-3.1-Instruct в формате OpenAI через vllm с --enable-auto-tool-choice. Удобно прятать различия за абстракцией Tool с адаптерами.
+  </FaqItem>
+  <FaqItem q="Как защитить function calling от опасных вызовов?">
+    Function calling — удалённое выполнение функций по запросу пользователя. Whitelist по роли — админ-функции refund_order или grant_admin не должны быть видны модели в диалоге обычного клиента, формируйте TOOLS динамически от user.role. Валидация аргументов после модели — LLM возвращает order_id: -1 или строку вместо числа, проверяйте через Pydantic/zod. Авторизация на уровне функции — cancel_order сверяет order.user_id с message.from_user.id, нельзя верить модели. Идемпотентность для возврата, отмены, списания бонусов. Тайм-аут 5-10 секунд. Sandboxing для опасных операций (run_python через изолированный воркер с лимитами CPU/памяти/сети).
+  </FaqItem>
+  <FaqItem q="Как работает стриминг ответа с tool_calls?">
+    Модель шлёт tool_calls дельтами: сначала имя функции, потом аргументы по кускам. Их нужно собирать в буфер по индексу, и только когда finish_reason равен tool_calls, исполнять. Дельты с content стримятся пользователю инкрементально через editMessageText, но не чаще 1 раза в секунду — иначе rate limit 429 от Telegram. Каждому tool_call должен соответствовать ровно один tool message в истории, иначе следующий запрос к OpenAI отвалится с 400. Параллельные tool_calls исполняются через asyncio.gather, результаты складываются в историю по tool_call_id.
+  </FaqItem>
+  <FaqItem q="Как контролировать стоимость function calling?">
+    Каждый вызов функции — минимум два запроса к LLM. На GPT-4-class средняя задержка 2-4 секунды, на быстрых (Haiku, GPT-4o-mini, GigaChat-Lite) — менее секунды. Кэшируйте system prompt и описание функций — у Anthropic cache_control ephemeral, у OpenAI автоматический cache на префиксах от 1024 токенов, экономия 50-90% на повторном контексте. Для типовых вопросов классификатор перед LLM — если попадает в FAQ, отвечайте шаблоном без модели. Логируйте токены на вход/выход, имя функции, время. Описание функций — тоже токены: 20 функций по 200 токенов = 4000 на каждый запрос.
+  </FaqItem>
+  <FaqItem q="Как тестировать function calling в боте?">
+    AI-функционал ломается не как обычный код. Заведите датасет из 100-200 реальных диалогов и прогоняйте при каждом изменении промпта или схемы. Метрики: доля корректных вызовов функций, корректных аргументов, «вежливых отказов» когда модель не находит инструмента. Юнит-тесты на сами функции пишутся обычным способом с моками upstream. Связку «модель + tools» тестируйте через мок LLM-клиента, который возвращает заранее заготовленные tool_calls — проверяете, что бот правильно их исполнил, передал результат обратно и сформировал финальный ответ. Лимит шагов (for _ in range(5)) обязателен, иначе модель уйдёт в бесконечный цикл.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка в течение рабочего дня.
+</EndCTA>

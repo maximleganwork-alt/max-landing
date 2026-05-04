@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useId, useState, type ReactNode } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, m } from "framer-motion";
 import { Plus } from "lucide-react";
 import { reachGoal } from "../../lib/analytics";
 import { cn } from "../../lib/utils";
@@ -41,19 +41,19 @@ export function AccordionItem({ question, children, defaultOpen = false }: Accor
           )}
         >
           <span className="flex-1">{question}</span>
-          <motion.span
+          <m.span
             animate={{ rotate: open ? 45 : 0 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
             className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-border text-fg-muted"
             aria-hidden="true"
           >
             <Plus className="h-4 w-4" />
-          </motion.span>
+          </m.span>
         </button>
       </h3>
       <AnimatePresence initial={false}>
         {open ? (
-          <motion.div
+          <m.div
             id={contentId}
             role="region"
             aria-labelledby={buttonId}
@@ -64,7 +64,7 @@ export function AccordionItem({ question, children, defaultOpen = false }: Accor
             className="overflow-hidden"
           >
             <div className="pb-5 text-body text-fg-muted leading-relaxed">{children}</div>
-          </motion.div>
+          </m.div>
         ) : null}
       </AnimatePresence>
     </div>

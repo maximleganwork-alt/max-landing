@@ -1,0 +1,367 @@
+---
+title: "Автотесты Telegram-бота: pytest, jest, mocks"
+description: "Как тестировать Telegram-бот: unit-тесты, интеграционные, сценарные. Подходы для aiogram, grammY, моки Bot API. Практические примеры."
+date: "2026-03-22"
+tags: ["Telegram", "разработка", "тестирование"]
+---
+
+Без тестов любой бот сложнее «эхо-чата» через 3–6 месяцев становится коробочкой страха: разработчик боится менять код, потому что не знает, что сломает воронку оплаты. Автотесты решают это, но писать их для бота сложнее, чем для веб-API: апдейты приходят асинхронно, состояние живёт в Redis, ответы уходят в стороннюю сеть, а пользователи могут нажать любую кнопку в любой момент. Разберём пирамиду тестов для Telegram-бота — от юнитов на хендлеры до E2E через настоящий аккаунт.
+
+## Пирамида тестов для бота
+
+Классическая пирамида адаптируется под специфику Telegram-бота так:
+
+1. **Unit (60–70% от объёма)** — хендлеры как функции, валидаторы, парсеры команд, форматтеры, чистая бизнес-логика. Запускаются за миллисекунды, моков минимум.
+2. **Integration (20–30%)** — хендлер + диспатчер + мок Bot API + реальное хранилище (Redis/SQLite в Docker). Проверяют связку «нажал кнопку → сменилось состояние → отправилось сообщение».
+3. **E2E (5–10%)** — настоящий бот в staging, второй Telegram-аккаунт под Pyrogram/Telethon шлёт реальные сообщения и проверяет ответы. Медленно, нестабильно, но единственный способ поймать проблемы с самим Bot API.
+
+Не пытайтесь перевернуть пирамиду. E2E-тесты соблазнительны, но 50 E2E будут падать через раз и блокировать релизы. Берите их только на критичные пути: оплата, регистрация, основной use-case.
+
+## Юнит-тесты handlers
+
+В современных фреймворках хендлер — это асинхронная функция, принимающая `message`/`callback_query` и `state`. Тестировать её можно как обычную функцию, подсунув моки:
+
+```python
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+from app.handlers.start import cmd_start
+
+@pytest.mark.asyncio
+async def test_cmd_start_greets_new_user():
+    message = MagicMock()
+    message.from_user.id = 12345
+    message.from_user.first_name = "Иван"
+    message.answer = AsyncMock()
+    state = AsyncMock()
+
+    await cmd_start(message, state)
+
+    message.answer.assert_called_once()
+    args, kwargs = message.answer.call_args
+    assert "Иван" in args[0]
+    assert kwargs.get("reply_markup") is not None
+    state.clear.assert_awaited_once()
+```
+
+Главный приём — структурировать код так, чтобы хендлер был тонкой обёрткой над сервисами. Тогда юнит-тестов на хендлеры нужно мало (smoke), а основная логика покрывается отдельно — без моков `message`.
+
+## Интеграционные тесты с моком Bot API
+
+Для интеграции есть готовые библиотеки. На Python — `aiogram-tests`, `aiogram_tests` (для aiogram 3.x), `python-telegram-bot` имеет `ptbtest`. Все они подменяют HTTP-клиент бота и записывают вызовы:
+
+```python
+from aiogram_tests import MockedBot
+from aiogram_tests.handler import MessageHandler
+from aiogram_tests.types.dataset import MESSAGE
+
+@pytest.mark.asyncio
+async def test_help_command_returns_menu():
+    request = MessageHandler(cmd_help, state=None)
+    calls = await request.query(MESSAGE.as_object(text="/help"))
+
+    answer = calls.send_message.fetchone()
+    assert "Доступные команды" in answer.text
+    assert len(answer.reply_markup.inline_keyboard) == 4
+```
+
+В grammY (TypeScript) — `bot.handleUpdate(update)` плюс мок `api`-методов через `bot.api.config.use(...)` или библиотека `grammy-mock`. На стороне Node популярен ещё `telegram-bot-test`, эмулирующий весь набор методов Bot API.
+
+## E2E через Pyrogram/Telethon
+
+Когда нужна полная гарантия — поднимаем второй Telegram-аккаунт (на отдельный номер, лучше виртуальный) и под `Telethon` пишем сценарии, которые шлют реальные сообщения тестовому боту:
+
+```python
+from telethon import TelegramClient, events
+import asyncio
+
+async def test_payment_flow():
+    async with TelegramClient("qa_session", api_id, api_hash) as client:
+        await client.send_message("@bot_staging", "/buy")
+        async with client.conversation("@bot_staging", timeout=10) as conv:
+            response = await conv.get_response()
+            assert "Выберите тариф" in response.text
+
+            await conv.send_message("Базовый")
+            invoice = await conv.get_response()
+            assert invoice.invoice is not None
+            assert invoice.invoice.total_amount == 49000
+```
+
+Ключевое: тестовый аккаунт должен быть отдельным, не личным. Сессия Telethon хранится локально и привязана к номеру — утечка `qa_session` = угон аккаунта. Запускать такие тесты в CI можно, но осторожно: Telegram блокирует подозрительную активность, поэтому ставьте задержки и не гоняйте E2E на каждый PR.
+
+<InlineCTA>Поможем с архитектурой и тестами для бота</InlineCTA>
+
+## Тестирование FSM
+
+FSM — самая хрупкая часть бота. Регрессии в воронке регистрации или заказа находят пользователи, и это плохо. Покрывайте каждый переход:
+
+```python
+@pytest.mark.asyncio
+async def test_lead_flow_full_path():
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=1, user_id=1))
+
+    await state.set_state(LeadFlow.waiting_name)
+    await dp.feed_update(bot, build_message_update(text="Иван Петров"))
+    assert await state.get_state() == LeadFlow.waiting_phone
+
+    await dp.feed_update(bot, build_message_update(text="+79991234567"))
+    assert await state.get_state() == LeadFlow.waiting_confirmation
+
+    data = await state.get_data()
+    assert data["name"] == "Иван Петров"
+    assert data["phone"] == "+79991234567"
+```
+
+Edge cases, которые легко забыть и которые ломаются чаще всего:
+
+- Команда `/cancel` в любом состоянии — должен сбрасывать FSM и возвращать в главное меню.
+- Невалидный ввод — `+7abc` вместо телефона: остаёмся в том же состоянии, шлём подсказку.
+- Timeout — сессия живёт 24 часа, потом сбрасывается; проверяйте, что бот корректно реагирует на «вернувшегося» пользователя.
+- Параллельные апдейты от одного пользователя — клик по двум кнопкам подряд.
+
+## Тестирование платежей
+
+Платежи нельзя проверять «на проде». Используйте sandbox-окружения:
+
+- **Telegram Payments** — провайдер `381764678:TEST:...` для ЮKassa, тестовая карта `1111 1111 1111 1026`.
+- **ЮKassa напрямую** — `test_` ключи, тестовые карты с разными сценариями (успех, отказ банка, 3DS).
+- **Stripe** — `sk_test_...`, карта `4242 4242 4242 4242` для успеха, `4000 0000 0000 0002` для отказа.
+
+Сам тест проверяет два момента: бот корректно создал invoice (`pre_checkout_query` отвечает `ok=true`) и корректно обработал `successful_payment` (записал в БД, выдал доступ, прислал подтверждение):
+
+```python
+@pytest.mark.asyncio
+async def test_successful_payment_grants_access():
+    payment = SuccessfulPayment(
+        currency="RUB",
+        total_amount=49000,
+        invoice_payload="tariff:basic:user:12345",
+        telegram_payment_charge_id="test_charge_1",
+        provider_payment_charge_id="test_provider_1",
+    )
+    message = build_message(successful_payment=payment, from_user_id=12345)
+
+    await dp.feed_update(bot, Update(update_id=1, message=message))
+
+    user = await users_repo.get(12345)
+    assert user.tariff == "basic"
+    assert user.paid_until > datetime.utcnow()
+```
+
+## Тестирование интеграций
+
+Бот почти всегда ходит в CRM, LLM, платёжку, внешние API. Реальные походы в тестах — медленно и нестабильно. Подходы:
+
+- **Моки CRM** — `responses` (Python) или `nock` (Node) перехватывают HTTP. Записываете ожидаемый запрос/ответ, проверяете, что бот отправил правильный payload.
+- **Record/replay** — `VCR.py` (Python), `nock recorder` (Node). Первый запуск идёт в реальное API, ответ пишется в YAML/JSON. Дальше тест играет запись.
+- **Контрактные тесты** — `Pact`. CRM публикует контракт, бот проверяет, что отправляет совместимый запрос. Защищает от того, что CRM-команда поменяет схему и сломает прод.
+
+Для LLM (OpenAI, Anthropic, YandexGPT) record/replay особенно полезен — иначе каждый прогон тестов стоит денег и зависит от настроения провайдера:
+
+```python
+import vcr
+
+my_vcr = vcr.VCR(
+    cassette_library_dir="tests/cassettes",
+    record_mode="once",
+    filter_headers=["authorization"],
+)
+
+@my_vcr.use_cassette("llm_summary.yaml")
+@pytest.mark.asyncio
+async def test_summarize_chat():
+    summary = await llm_client.summarize("Длинный диалог пользователя...")
+    assert len(summary) < 500
+    assert "ключевые тезисы" in summary.lower()
+```
+
+## Snapshot-тесты сообщений
+
+Для длинных текстов и сложной разметки кнопок удобны golden files. Сохраняем эталон, при изменении тест падает — разработчик глазами проверяет, что новая версия лучше, и обновляет snapshot:
+
+```python
+def test_order_summary_snapshot(snapshot):
+    order = Order(id=42, items=[...], total=12500, address="Москва, ...")
+    text = render_order_summary(order)
+    snapshot.assert_match(text, "order_summary.txt")
+```
+
+Библиотеки: `pytest-snapshot`, `syrupy` (Python), `jest --snapshot` (Node). Полезно для шаблонов, которые правят неразработчики (контент-менеджеры) — diff в PR сразу показывает, что именно изменилось.
+
+## Property-based и fuzz
+
+`Hypothesis` (Python) и `fast-check` (TS) генерируют сотни случайных входов и проверяют инварианты. Идеально для парсеров команд, валидаторов, форматтеров:
+
+```python
+from hypothesis import given, strategies as st
+
+@given(st.text(min_size=1, max_size=20))
+def test_username_normalizer_idempotent(raw):
+    once = normalize_username(raw)
+    twice = normalize_username(once)
+    assert once == twice
+
+@given(st.text())
+def test_callback_data_parser_never_crashes(data):
+    try:
+        parse_callback(data)
+    except CallbackParseError:
+        pass
+```
+
+Fuzz-тестирование `callback_data` особенно важно: пользователь может прислать что угодно (старую кнопку из истории чата, кнопку от другого бота), и парсер не должен падать с 500. Любой `KeyError` в обработчике callback — это потенциальный DoS.
+
+## CI: GitHub Actions / GitLab CI
+
+На каждый PR — линт, типы, юниты, интеграция. E2E — отдельным nightly-джобом или вручную перед релизом.
+
+```yaml
+name: tests
+on: [pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: ruff check .
+      - run: mypy app
+      - run: pytest tests/unit -v --cov=app --cov-report=xml
+      - run: pytest tests/integration -v
+        env:
+          REDIS_URL: redis://localhost:6379/0
+      - uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+```
+
+Параллелим юниты и интеграцию в разных джобах. Кэшируем зависимости. Если CI идёт дольше 10 минут — разработчики начинают «авось пройдёт» и перестают ждать.
+
+## Покрытие кода
+
+`pytest-cov` (Python), `c8`/`nyc` (Node), `jest --coverage`. Реалистичный таргет — 70–80%. Не гонитесь за 100%: последние 20% — это код, который либо тривиален (геттеры), либо нетестируем без гигантских моков (стартап-инициализация). Время на 100% дешевле потратить на E2E критичных путей.
+
+Полезный приём — `--cov-fail-under=70` в CI. Покрытие может только расти. Если PR снижает его — тест падает, разработчик дописывает тесты.
+
+## Performance и load
+
+Webhook должен отвечать за 100–500 мс, иначе Telegram повторит апдейт. Под нагрузкой — десятки RPS. Проверяем:
+
+- `locust` — пишем сценарий «POST /webhook с типичным апдейтом», запускаем 100 виртуальных пользователей.
+- `bombardier`, `wrk`, `k6` — простые HTTP-нагрузочные генераторы.
+- `pytest-benchmark` — локальные бенчмарки горячих функций (парсер, форматтер).
+
+Если бот не держит 50 RPS на webhook, ищите узкое место: синхронный поход в БД, медленный LLM-вызов внутри хендлера, отсутствие connection pool.
+
+## Регрессионные тесты
+
+После каждой пойманной в проде ошибки — пишем регрессионный тест. Это не «лишняя бюрократия», а единственный способ гарантировать, что баг не вернётся:
+
+```python
+@pytest.mark.regression
+@pytest.mark.asyncio
+async def test_regression_2026_03_15_double_charge():
+    """
+    Баг: при двойном клике на «Оплатить» создавалось два инвойса.
+    Фикс: блокировка через Redis NX на 30 секунд по user_id.
+    """
+    await pay_handler(message_user_42, state)
+    await pay_handler(message_user_42, state)
+    assert bot.send_invoice.call_count == 1
+```
+
+Регрессионные тесты помечаем тегом, чтобы при желании запускать отдельно. После года жизни проекта таких тестов накапливается 30–50 — и это бесценный актив.
+
+<InlineCTA>Проведём аудит тестов и архитектуры бота</InlineCTA>
+
+## Pre-prod с ботом-двойником
+
+Параллельно с `@your_bot` держим `@your_bot_staging`. Тот же код, та же БД-схема, отдельные Redis/Postgres, отдельные API-ключи. После каждого мерджа в `main` деплоится staging, прогоняются E2E через Telethon, и только потом — прод.
+
+Преимущества:
+
+- Реальный Telegram, реальные платежи (sandbox), реальные нагрузки.
+- Можно дать staging внутренним тестировщикам и собирать обратную связь до релиза.
+- Гарантирует, что миграции БД и конфиг применяются корректно.
+
+Недостаток — двойная инфраструктура. Но для бота с платежами или критичной логикой это оправдано.
+
+## Контрактные тесты с CRM
+
+Если бот ходит в CRM (AmoCRM, Bitrix24, своя), контракт между ними — точка отказа. CRM-команда может поменять формат поля, и бот молча начнёт терять лиды. `Pact` решает это:
+
+1. Бот пишет contract: «отправляю POST `/leads` с полями `name`, `phone`, `source`».
+2. Pact-broker хранит контракт.
+3. CRM прогоняет провайдер-тест: «принимаю запрос с этими полями, отвечаю 201».
+4. Если CRM меняет API — провайдер-тест падает раньше, чем сломается прод.
+
+Для команд из 2 человек — оверкилл. Для команд по 5+ с разделением на бэкенд CRM и команду бота — обязательно.
+
+## QA процесс и runbook
+
+Тесты — не вся история. Нужен и процесс:
+
+- **Smoke-тесты после деплоя** — 5–10 ручных или E2E-проверок: `/start` отвечает, оплата проходит, админка открывается. Делает дежурный или автоматика.
+- **Runbook на критичные пути** — markdown-документ с пошаговыми сценариями: «как проверить регистрацию», «как проверить оплату», «куда смотреть, если webhook не отвечает». Хранится рядом с кодом, обновляется при изменениях воронок.
+- **Чек-лист релиза** — миграции применены, env переменные на месте, мониторинг настроен, откат подготовлен.
+
+Без runbook знание о боте живёт в голове одного разработчика. Уйдёт он — команда неделю разбирается, как вообще проверить, что бот работает.
+
+## Библиотеки тестирования
+
+| Библиотека | Язык | Назначение |
+|---|---|---|
+| `pytest` + `pytest-asyncio` | Python | основа для тестов async-кода |
+| `aiogram-tests`, `aiogram_tests` | Python | моки Bot API для aiogram 2.x/3.x |
+| `ptbtest` | Python | то же для python-telegram-bot |
+| `Telethon`, `Pyrogram` | Python | E2E через настоящий аккаунт |
+| `responses`, `respx` | Python | HTTP-моки для CRM/LLM |
+| `VCR.py` | Python | record/replay HTTP |
+| `Hypothesis` | Python | property-based testing |
+| `pytest-cov` | Python | покрытие кода |
+| `pytest-snapshot`, `syrupy` | Python | snapshot-тесты |
+| `locust`, `k6` | универсально | нагрузочное тестирование |
+| `Pact` | универсально | контрактные тесты |
+| `grammy-mock`, `nock` | Node/TS | моки Bot API и HTTP для grammY |
+| `jest`, `vitest` | Node/TS | основа для тестов TS-кода |
+
+## Итого
+
+Пирамида тестов для Telegram-бота: 60–70% юнитов на чистые функции и хендлеры с моками, 20–30% интеграции через `aiogram-tests`/`grammy-mock` с реальным Redis в Docker, 5–10% E2E через `Telethon` против бота-двойника. Платежи — через sandbox, LLM и CRM — через record/replay (`VCR.py`). FSM покрываем переход за переходом, не забывая edge cases (`/cancel`, timeout, невалидный ввод, параллельные клики). Property-based для парсеров, snapshot для длинных сообщений, fuzz для `callback_data`. CI на каждый PR — линт + типы + юниты + интеграция за ≤10 минут, E2E — nightly. Покрытие — 70–80%, не гонитесь за 100%. Регрессионные тесты на каждый пойманный баг. Pre-prod с `@bot_staging` — обязателен для ботов с платежами. Контрактные тесты с CRM — для команд от 5 человек. И не забывайте про runbook — без него знания живут в голове одного разработчика.
+
+<Faq>
+  <FaqItem q="Какая пирамида тестов нужна Telegram-боту?">
+    Классическая пирамида адаптируется под специфику Telegram-бота так. Unit (60–70% от объёма) — хендлеры как функции, валидаторы, парсеры команд, форматтеры, чистая бизнес-логика. Запускаются за миллисекунды, моков минимум. Integration (20–30%) — хендлер плюс диспатчер плюс мок Bot API плюс реальное хранилище (Redis/SQLite в Docker); проверяют связку «нажал кнопку → сменилось состояние → отправилось сообщение». E2E (5–10%) — настоящий бот в staging, второй Telegram-аккаунт под Pyrogram/Telethon шлёт реальные сообщения и проверяет ответы. Не пытайтесь перевернуть пирамиду: 50 E2E будут падать через раз.
+  </FaqItem>
+  <FaqItem q="Как тестировать handlers aiogram через мок Bot API?">
+    Для интеграции есть готовые библиотеки. На Python — aiogram-tests, aiogram_tests (для aiogram 3.x), python-telegram-bot имеет ptbtest. Все они подменяют HTTP-клиент бота и записывают вызовы. Пишем MessageHandler(handler, state=None), подаём MESSAGE.as_object(text="/help"), читаем calls.send_message.fetchone() и проверяем поля text и reply_markup. В grammY (TypeScript) — bot.handleUpdate(update) плюс мок api-методов через bot.api.config.use(...) или библиотека grammy-mock. На Node популярен ещё telegram-bot-test, эмулирующий весь набор методов Bot API.
+  </FaqItem>
+  <FaqItem q="Как организовать E2E-тесты Telegram-бота через Telethon?">
+    Когда нужна полная гарантия — поднимаем второй Telegram-аккаунт (на отдельный номер, лучше виртуальный) и под Telethon пишем сценарии, которые шлют реальные сообщения тестовому боту. Используем conv = client.conversation("@bot_staging"), conv.send_message и conv.get_response с timeout. Ключевое: тестовый аккаунт должен быть отдельным, не личным. Сессия Telethon хранится локально и привязана к номеру — утечка qa_session равна угону аккаунта. Запускать такие тесты в CI можно, но осторожно: Telegram блокирует подозрительную активность, ставьте задержки и не гоняйте E2E на каждый PR.
+  </FaqItem>
+  <FaqItem q="Как тестировать FSM-переходы и edge cases в боте?">
+    FSM — самая хрупкая часть бота. Покрывайте каждый переход. Создаём FSMContext с MemoryStorage, ставим начальное состояние, шлём апдейт через dp.feed_update, проверяем итоговое состояние через state.get_state() и сохранённые данные через state.get_data(). Edge cases, которые легко забыть. Команда /cancel в любом состоянии должна сбрасывать FSM. Невалидный ввод (+7abc вместо телефона) — остаёмся в том же состоянии, шлём подсказку. Timeout — сессия живёт 24 часа. Параллельные апдейты от одного пользователя — клик по двум кнопкам подряд. Регрессии в воронке регистрации находят пользователи, и это плохо.
+  </FaqItem>
+  <FaqItem q="Как тестировать платежи в Telegram-боте?">
+    Платежи нельзя проверять на проде. Используйте sandbox. Telegram Payments — провайдер с TEST-префиксом для ЮKassa, тестовая карта 1111 1111 1111 1026. ЮKassa напрямую — test-ключи, тестовые карты с разными сценариями (успех, отказ банка, 3DS). Stripe — sk_test, карта 4242 4242 4242 4242 для успеха, 4000 0000 0000 0002 для отказа. Сам тест проверяет два момента: бот корректно создал invoice (pre_checkout_query отвечает ok=true) и корректно обработал successful_payment (записал в БД, выдал доступ, прислал подтверждение). Используем SuccessfulPayment с invoice_payload и telegram_payment_charge_id.
+  </FaqItem>
+  <FaqItem q="Как тестировать интеграции с CRM и LLM?">
+    Бот почти всегда ходит в CRM, LLM, платёжку, внешние API. Реальные походы в тестах медленны и нестабильны. Подходы. Моки CRM — responses (Python) или nock (Node) перехватывают HTTP. Record/replay — VCR.py (Python), nock recorder (Node). Первый запуск идёт в реальное API, ответ пишется в YAML/JSON. Дальше тест играет запись. Контрактные тесты — Pact: CRM публикует контракт, бот проверяет, что отправляет совместимый запрос. Для LLM record/replay особенно полезен — иначе каждый прогон тестов стоит денег и зависит от настроения провайдера. Используйте filter_headers=["authorization"], чтобы не утекали ключи.
+  </FaqItem>
+  <FaqItem q="Что должно быть в CI пайплайне Telegram-бота?">
+    На каждый PR — линт, типы, юниты, интеграция. E2E — отдельным nightly-джобом или вручную перед релизом. Минимальный GitHub Actions pipeline. Поднимаем services redis (image redis:7). Чекаут, setup-python с кэшем pip. ruff check, mypy app. pytest tests/unit с pytest-cov. pytest tests/integration с REDIS_URL. Загрузка покрытия в codecov. Параллелим юниты и интеграцию в разных джобах. Кэшируем зависимости. Если CI идёт дольше 10 минут — разработчики начинают «авось пройдёт» и перестают ждать. Реалистичный таргет покрытия — 70–80%, не гонитесь за 100%: последние 20% это либо тривиальный код, либо нетестируемый.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой Telegram-бота под вашу задачу — от ТЗ до запуска. Бесплатная оценка в течение рабочего дня.
+</EndCTA>

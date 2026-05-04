@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, m } from "framer-motion";
 import { Button } from "../ui/Button";
 
 const STORAGE_KEY = "cookie_consent";
@@ -30,7 +30,7 @@ export function CookieBanner() {
   return (
     <AnimatePresence>
       {visible ? (
-        <motion.div
+        <m.div
           initial={{ y: 80, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 80, opacity: 0 }}
@@ -64,7 +64,7 @@ export function CookieBanner() {
               </Button>
             </div>
           </div>
-        </motion.div>
+        </m.div>
       ) : null}
     </AnimatePresence>
   );

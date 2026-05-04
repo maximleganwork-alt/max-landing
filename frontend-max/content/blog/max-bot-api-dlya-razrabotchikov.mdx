@@ -1,0 +1,545 @@
+---
+title: "MAX Bot API: с чего начать разработчику"
+description: "Практический обзор Bot API мессенджера MAX для разработчиков: апдейты, webhook против polling, типичные ошибки и архитектурные паттерны."
+date: "2026-04-02"
+tags: ["MAX", "API", "разработка"]
+---
+
+MAX Bot API — это HTTP-интерфейс, через который бот общается с платформой: получает входящие сообщения и колбэки, отправляет ответы, медиа и клавиатуры. Логика близка к Telegram Bot API: те же `sendMessage`, `getUpdates`, `callback_query`, тот же подход к long polling и webhook. Но есть и отличия — лимиты, набор поддерживаемых типов апдейтов, формат токена. Этот разбор — для разработчика, который собирается написать первого бота, и хочет сразу заложить адекватную архитектуру.
+
+## Регистрация бота и токен
+
+Бот регистрируется через системного «родительского» бота — аналог BotFather в Telegram. В MAX он называется `@MasterBot` (имя — иллюстративный пример; точное имя смотрите в документации платформы). Шаги:
+
+1. Откройте чат с родительским ботом.
+2. Отправьте команду `/newbot`.
+3. Введите отображаемое имя бота (например, «Студия Записи»).
+4. Введите технический username — должен заканчиваться на `_bot` или `bot`.
+5. Получите токен.
+
+Формат токена: `<bot_id>:<random_string>`, длина около 46 символов, разделитель — двоеточие, например `1234567890:AAEhBOweik9ai9aiL_some_long_secret`. Это единственное доказательство, что вы — владелец бота. Любой, кто его получит, сможет отправлять сообщения от имени бота и читать всю переписку.
+
+Хранение: только в переменных окружения, никогда не в коде и не в git.
+
+```bash
+export MAX_BOT_TOKEN="1234567890:AAEhBOweik9ai9aiL_some_long_secret"
+```
+
+В Docker — через `env_file` или secrets. В Kubernetes — через Secret. В CI — через encrypted variables.
+
+## Структура апдейта (пример JSON)
+
+Все апдейты приходят как JSON-объекты с обязательным полем `update_id` (монотонно растущий идентификатор) и одним из вложенных объектов: `message`, `edited_message`, `callback_query`, `inline_query`, `business_message` и т. д.
+
+### Текстовое сообщение
+
+```json
+{
+  "update_id": 982347123,
+  "message": {
+    "message_id": 5821,
+    "from": {
+      "id": 1029384756,
+      "is_bot": false,
+      "first_name": "Анна",
+      "last_name": "Петрова",
+      "username": "anna_p",
+      "language_code": "ru"
+    },
+    "chat": {
+      "id": 1029384756,
+      "type": "private",
+      "first_name": "Анна",
+      "username": "anna_p"
+    },
+    "date": 1762080123,
+    "text": "/start запись",
+    "entities": [
+      { "type": "bot_command", "offset": 0, "length": 6 }
+    ]
+  }
+}
+```
+
+Поля: `update_id` — для дедупликации. `message_id` — id внутри чата. `from` — отправитель (`is_bot` отличает бота от человека). `chat` — куда пришло (`private`, `group`, `supergroup`, `channel`). `date` — UNIX timestamp. `text` — собственно текст. `entities` — разметка: команды, упоминания, ссылки, форматирование.
+
+### Callback от inline-кнопки
+
+```json
+{
+  "update_id": 982347124,
+  "callback_query": {
+    "id": "8482736487263",
+    "from": {
+      "id": 1029384756,
+      "first_name": "Анна",
+      "username": "anna_p"
+    },
+    "message": {
+      "message_id": 5822,
+      "chat": { "id": 1029384756, "type": "private" },
+      "date": 1762080130,
+      "text": "Выберите услугу:"
+    },
+    "data": "service:haircut:30"
+  }
+}
+```
+
+`data` — то, что вы положили в `callback_data` кнопки, до 64 байт. На него обязательно надо отвечать через `answerCallbackQuery`, иначе у пользователя будет крутиться индикатор загрузки.
+
+### Business-сообщение
+
+```json
+{
+  "update_id": 982347125,
+  "business_message": {
+    "message_id": 91,
+    "business_connection_id": "conn_abc123",
+    "from": { "id": 1029384756, "first_name": "Анна" },
+    "chat": { "id": 1029384756, "type": "private" },
+    "date": 1762080140,
+    "text": "Здравствуйте, есть запись на завтра?"
+  }
+}
+```
+
+Это сообщение, прилетевшее в личный чат владельца бизнес-аккаунта; бот действует от имени владельца через `business_connection_id`.
+
+## Основные методы Bot API
+
+Все методы вызываются как `POST https://botapi.max.ru/bot<TOKEN>/<methodName>` с телом `application/json`.
+
+| Метод | Назначение |
+|-------|------------|
+| `getMe` | Информация о боте (id, username, имя). Используется как ping. |
+| `sendMessage` | Отправить текст в чат. |
+| `editMessageText` | Изменить ранее отправленное сообщение (до 48 часов). |
+| `deleteMessage` | Удалить сообщение бота или пользователя в чате, где бот — админ. |
+| `answerCallbackQuery` | Подтвердить нажатие inline-кнопки. |
+| `sendPhoto` | Отправить изображение по `file_id`, URL или multipart. |
+| `sendDocument` | Отправить файл (до 50 МБ при URL/file_id). |
+| `setWebhook` | Зарегистрировать URL для приема апдейтов. |
+| `deleteWebhook` | Снять webhook (вернуться на polling). |
+| `getUpdates` | Long polling — забрать пачку апдейтов. |
+
+Пример `sendMessage`:
+
+```http
+POST /bot1234567890:AAE.../sendMessage HTTP/1.1
+Host: botapi.max.ru
+Content-Type: application/json
+
+{
+  "chat_id": 1029384756,
+  "text": "Запись подтверждена на 14:00",
+  "parse_mode": "MarkdownV2",
+  "disable_notification": false
+}
+```
+
+Пример `answerCallbackQuery`:
+
+```http
+POST /bot1234567890:AAE.../answerCallbackQuery HTTP/1.1
+Content-Type: application/json
+
+{
+  "callback_query_id": "8482736487263",
+  "text": "Услуга выбрана",
+  "show_alert": false
+}
+```
+
+Пример `sendPhoto`:
+
+```http
+POST /bot.../sendPhoto HTTP/1.1
+Content-Type: application/json
+
+{
+  "chat_id": 1029384756,
+  "photo": "https://cdn.example.ru/menu.jpg",
+  "caption": "Наше меню"
+}
+```
+
+Ответ всегда вида `{ "ok": true, "result": ... }` или `{ "ok": false, "error_code": 400, "description": "Bad Request: chat not found" }`.
+
+## Авторизация и токен
+
+Токен — это и аутентификация, и идентификация. Передается двумя способами:
+
+1. В URL: `https://botapi.max.ru/bot<TOKEN>/sendMessage` — классический «телеграмный» вариант.
+2. В заголовке: `Authorization: Bearer <TOKEN>` — если платформа поддерживает (рекомендуется, так как URL попадает в логи прокси).
+
+Что делать при компрометации:
+
+- Немедленно отозвать токен через родительский бот: `/revoke` → выбрать бота → подтвердить.
+- Получить новый токен той же командой `/token`.
+- Перевыпустить во всех средах (prod, staging, CI).
+- Просмотреть логи: что отправлялось от вашего имени с момента утечки.
+
+Ротация раз в 90 дней — хорошая практика, если токен лежит на нескольких машинах.
+
+## Webhook setup пошагово
+
+Webhook — это HTTPS-эндпоинт на вашей стороне, на который MAX шлет POST с JSON-апдейтом. Требования:
+
+- Только HTTPS с валидным сертификатом (Let's Encrypt подходит).
+- Порт 443, 80, 88 или 8443.
+- Ответ за 60 секунд, иначе апдейт ретраится.
+- Желательно — поддержка `secret_token` для проверки подлинности запроса.
+
+Регистрация:
+
+```http
+POST /bot<TOKEN>/setWebhook HTTP/1.1
+Content-Type: application/json
+
+{
+  "url": "https://bot.example.ru/max/webhook",
+  "secret_token": "AaZz09_xxxxxxxxxxxxxxxxx",
+  "allowed_updates": ["message", "callback_query", "business_message"],
+  "max_connections": 40
+}
+```
+
+`secret_token` MAX вернет в заголовке `X-MAX-Bot-Api-Secret-Token` каждого запроса — сравнивайте с тем, что регистрировали.
+
+Минимальный сервер на Go:
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "log"
+    "net/http"
+    "os"
+)
+
+type Update struct {
+    UpdateID int             `json:"update_id"`
+    Message  json.RawMessage `json:"message,omitempty"`
+}
+
+func main() {
+    secret := os.Getenv("MAX_WEBHOOK_SECRET")
+    http.HandleFunc("/max/webhook", func(w http.ResponseWriter, r *http.Request) {
+        if r.Header.Get("X-MAX-Bot-Api-Secret-Token") != secret {
+            http.Error(w, "forbidden", http.StatusForbidden)
+            return
+        }
+        var u Update
+        if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
+            http.Error(w, "bad request", http.StatusBadRequest)
+            return
+        }
+        log.Printf("update %d", u.UpdateID)
+        w.WriteHeader(http.StatusOK)
+    })
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+nginx как фронт:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name bot.example.ru;
+
+    ssl_certificate     /etc/letsencrypt/live/bot.example.ru/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/bot.example.ru/privkey.pem;
+
+    location /max/webhook {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-MAX-Bot-Api-Secret-Token $http_x_max_bot_api_secret_token;
+        proxy_read_timeout 65s;
+    }
+}
+```
+
+## Long polling vs webhook
+
+Long polling — бот сам периодически опрашивает API через `getUpdates`. Удобно для разработки: не нужен публичный HTTPS, поднимается на ноутбуке за минуту. В продакшене webhook эффективнее: меньше задержка, меньше холостых запросов, лучше масштабируется.
+
+Пример `getUpdates`:
+
+```http
+POST /bot<TOKEN>/getUpdates HTTP/1.1
+Content-Type: application/json
+
+{
+  "offset": 982347125,
+  "limit": 100,
+  "timeout": 30,
+  "allowed_updates": ["message", "callback_query"]
+}
+```
+
+`offset` — `update_id` последнего обработанного апдейта плюс 1; так MAX понимает, что предыдущие можно «забыть». Без передачи `offset` те же апдейты будут приходить снова — частая причина дублей.
+
+Переход с polling на webhook занимает минут 30: настраиваете обратный прокси с валидным сертификатом, регистрируете URL через `setWebhook`, добавляете проверку `secret_token`. Логика обработчика остается той же.
+
+## Типы апдейтов (allowed_updates)
+
+В `setWebhook` и `getUpdates` можно ограничить набор интересующих событий через `allowed_updates`. Это экономит трафик и снижает нагрузку.
+
+| Тип | Когда приходит |
+|-----|----------------|
+| `message` | Новое сообщение от пользователя или в группе. |
+| `edited_message` | Пользователь отредактировал свое сообщение. |
+| `channel_post` | Пост в канале, где бот — админ. |
+| `edited_channel_post` | Редактирование поста канала. |
+| `callback_query` | Нажатие на inline-кнопку. |
+| `inline_query` | Inline-режим — пользователь набирает `@bot ...`. |
+| `chosen_inline_result` | Пользователь выбрал результат inline-запроса. |
+| `chat_member` | Изменение состава участников чата. |
+| `my_chat_member` | Бот добавлен/удален/повышен/понижен в чате. |
+| `business_connection` | Установлена/разорвана связь с бизнес-аккаунтом. |
+| `business_message` | Сообщение в чат подключенного бизнес-аккаунта. |
+
+По умолчанию `chat_member` и `business_*` не присылаются — их надо явно включать.
+
+## Inline-клавиатуры и callback_query
+
+Inline-кнопки прикрепляются к сообщению через `reply_markup`:
+
+```json
+{
+  "chat_id": 1029384756,
+  "text": "Выберите услугу:",
+  "reply_markup": {
+    "inline_keyboard": [
+      [
+        { "text": "Стрижка", "callback_data": "service:haircut" },
+        { "text": "Окрашивание", "callback_data": "service:color" }
+      ],
+      [
+        { "text": "Открыть запись", "url": "https://example.ru/booking" }
+      ]
+    ]
+  }
+}
+```
+
+`callback_data` ограничен 64 байтами в UTF-8. Не пихайте туда JSON и длинные id — это чаще всего и есть причина «у меня кнопка не нажимается». Кладите короткий код, а полное состояние держите на сервере по ключу `user_id`.
+
+Защита от replay: после `answerCallbackQuery` помечайте кнопку как использованную (либо удаляйте сообщение, либо перерисовывайте `editMessageReplyMarkup`). Иначе пользователь нажмет «Подтвердить» десять раз, и вы создадите десять заказов.
+
+## Лимиты и rate-limit
+
+Точные числа смотрите в актуальной документации MAX, но ориентировочные пределы — те же, что в Telegram-подобных API:
+
+| Ограничение | Значение |
+|-------------|----------|
+| Сообщений в один чат | ~1 в секунду (для уведомлений ~30/мин) |
+| Сообщений всего | ~30 в секунду на бота |
+| Рассылка в группу | ~20 в минуту |
+| Длина текста сообщения | 4096 символов |
+| Длина caption у медиа | 1024 символа |
+| Длина `callback_data` | 64 байта |
+| Размер фото | 10 МБ |
+| Размер документа по URL/file_id | 50 МБ |
+| Размер документа multipart | 50 МБ |
+| Inline-кнопок в строке | 8 |
+| Строк inline-клавиатуры | до 100 (фактически — 8–10) |
+
+При превышении API возвращает `429 Too Many Requests` с полем `retry_after` в секундах. Реализуйте экспоненциальный бэкофф; систематические нарушения приводят к временной блокировке, повторные — к перманентной.
+
+## Отличия от Telegram Bot API
+
+| Фича | Telegram | MAX |
+|------|----------|-----|
+| Базовый URL | `api.telegram.org/bot<token>` | `botapi.max.ru/bot<token>` |
+| Регистрация бота | `@BotFather` | системный «родительский» бот |
+| Формат токена | `ID:35-символьная-строка` | `ID:строка` (близкий формат) |
+| `sendMessage`, `editMessageText`, `deleteMessage` | есть | есть, та же сигнатура |
+| `callback_query` | есть | есть |
+| `inline_query` | есть | поддержка зависит от версии API |
+| Mini Apps / WebApp кнопки | есть | планируется/частично |
+| Платежи через Bot API | `sendInvoice`, провайдеры | свой механизм платежей платформы |
+| Stickers | есть | ограниченно |
+| Voice/Video notes | есть | зависит от версии |
+| `setMyCommands` | есть | есть |
+| Business API | есть | есть, ключевая фича MAX |
+
+Базовый совет: код, написанный против Telegram Bot API в стиле «POST JSON на метод», переносится в MAX с минимальными правками — обычно меняется только базовый URL и обрабатываются недостающие типы.
+
+<InlineCTA>Поможем спроектировать архитектуру бота под вашу нагрузку</InlineCTA>
+
+## Минимальный пример echo-бота на Python и Go
+
+Python (long polling, без зависимостей кроме `requests`):
+
+```python
+import os
+import time
+import requests
+
+TOKEN = os.environ["MAX_BOT_TOKEN"]
+API = f"https://botapi.max.ru/bot{TOKEN}"
+
+def send(chat_id: int, text: str) -> None:
+    r = requests.post(f"{API}/sendMessage",
+                      json={"chat_id": chat_id, "text": text}, timeout=10)
+    r.raise_for_status()
+
+def main() -> None:
+    offset = 0
+    while True:
+        try:
+            r = requests.post(f"{API}/getUpdates",
+                              json={"offset": offset, "timeout": 30,
+                                    "allowed_updates": ["message"]},
+                              timeout=35)
+            for upd in r.json().get("result", []):
+                offset = upd["update_id"] + 1
+                msg = upd.get("message")
+                if msg and "text" in msg:
+                    send(msg["chat"]["id"], f"Эхо: {msg['text']}")
+        except Exception as e:
+            print("error:", e)
+            time.sleep(2)
+
+if __name__ == "__main__":
+    main()
+```
+
+Go (webhook-сервер):
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+)
+
+var token = os.Getenv("MAX_BOT_TOKEN")
+
+type Update struct {
+    UpdateID int `json:"update_id"`
+    Message  *struct {
+        Chat struct{ ID int64 `json:"id"` } `json:"chat"`
+        Text string `json:"text"`
+    } `json:"message"`
+}
+
+func send(chatID int64, text string) error {
+    body, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": text})
+    url := fmt.Sprintf("https://botapi.max.ru/bot%s/sendMessage", token)
+    resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+    return nil
+}
+
+func main() {
+    http.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
+        var u Update
+        if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
+            http.Error(w, "bad request", 400)
+            return
+        }
+        if u.Message != nil && u.Message.Text != "" {
+            _ = send(u.Message.Chat.ID, "Эхо: "+u.Message.Text)
+        }
+        w.WriteHeader(http.StatusOK)
+    })
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+## Базовая модель: апдейты и обработчики
+
+Все взаимодействие построено вокруг **апдейтов** — событий, которые присылает MAX. Типичный апдейт — новое сообщение, нажатие на inline-кнопку, добавление бота в чат, обновление участника. Каждый апдейт надо распарсить и направить в нужный обработчик.
+
+Архитектурно лучше всего работает паттерн «роутер + хендлеры»: входящий апдейт сначала классифицируется (тип сообщения, состояние пользователя), потом передается в конкретный handler. Это спасает от мегафункции `handleUpdate` на 2000 строк, которая получается, если писать линейно.
+
+## Состояния и FSM
+
+Бот без состояния — это команда «эхо». Любой осмысленный сценарий требует FSM (finite state machine): пользователь нажал «Записаться» → ввел имя → выбрал услугу → подтвердил. Между шагами надо где-то хранить контекст.
+
+Для небольших ботов хватает Redis с TTL: ключ — `user_id`, значение — JSON с текущим шагом и собранными данными. Для серьезных проектов лучше хранить состояние в основной БД (PostgreSQL), а Redis использовать только как кэш.
+
+Важно: **никогда не доверяйте клиенту**. Колбэк-данные кнопок можно подделать, поэтому каждое действие надо валидировать против хранимого состояния пользователя.
+
+## Типичные ошибки на старте
+
+Несколько граблей, на которые регулярно наступают новые команды:
+
+1. **Синхронные вызовы внешних API внутри обработчика.** Webhook должен отвечать быстро, иначе MAX начнет ретраить апдейт, и пользователь получит дубли. Длинные операции выносите в очередь.
+2. **Лимиты не учтены.** API имеет ограничения по частоте отправки сообщений. Без бэкоффа массовая рассылка падает на полпути.
+3. **Нет идемпотентности.** Один и тот же апдейт может прилететь дважды. Сохраняйте `update_id` и игнорируйте повторы.
+4. **Логи в stdout без структуры.** В первом инциденте вы будете грепать тысячи строк. Лучше сразу JSON-лог + correlation ID.
+5. **Длинный `callback_data`.** Кнопка молча не работает — проверяйте 64-байтное ограничение.
+6. **Токен в репозитории.** Даже private-репо — это утечка: подрядчики, форки, бэкапы.
+
+## Тестирование и эмуляция
+
+Для тестов удобно поднять локальный «эмулятор» апдейтов: маленький сервис, который шлет в ваш webhook те же JSON-объекты, что приходят от настоящего MAX. Так покрываются юнит-тестами все сценарии без реального бота. Для интеграционных тестов используется отдельный «технический» бот.
+
+CI должен прогонять линтер, тайпчекер (TypeScript/Go), юнит-тесты и хотя бы один happy-path сценарий через эмулятор. Без этого любой релиз — рулетка.
+
+## Деплой
+
+Минимальный продакшен-сетап:
+
+- Docker-образ не больше 200 МБ.
+- nginx (или Yandex ALB) как фронт с SSL.
+- 1–2 реплики приложения за балансировщиком.
+- Метрики (Prometheus/Grafana) и алерты на ошибки.
+
+Для большинства бизнес-ботов хватает 1 ГБ RAM и 1 vCPU. Узким местом обычно становится не код, а синхронные обращения к чужим API.
+
+## Итого
+
+MAX Bot API — понятный HTTP-интерфейс с предсказуемой моделью апдейтов, близкий по идеологии к Telegram. Главное — сразу заложить FSM, очередь, идемпотентность, проверку `secret_token` на webhook и нормальный мониторинг. Тогда бот переживет и рост нагрузки, и сменy логики, и интеграции, которые «надо было еще вчера».
+
+<Faq>
+  <FaqItem q="Что такое MAX Bot API и как с ним начать работу?">
+    HTTP-интерфейс, через который бот общается с платформой: получает входящие сообщения и колбэки, отправляет ответы, медиа и клавиатуры. Логика близка к Telegram, но детали отличаются (таймауты, лимиты, форматы). Все взаимодействие построено вокруг апдейтов — событий, которые присылает MAX. Типичный апдейт — новое сообщение, нажатие на inline-кнопку, добавление бота в чат, обновление участника. Каждый апдейт надо распарсить и направить в нужный обработчик через паттерн «роутер + хендлеры», иначе получится мегафункция handleUpdate на 2000 строк.
+  </FaqItem>
+  <FaqItem q="Как зарегистрировать бота и получить токен в MAX?">
+    Через системного «родительского» бота — аналог BotFather в Telegram. Шаги: открыть чат с родительским ботом, отправить /newbot, ввести отображаемое имя и technical username (заканчивается на _bot), получить токен формата bot_id:random_string длиной около 46 символов. Хранить токен только в переменных окружения, никогда не в коде и не в git. При компрометации немедленно отозвать через /revoke и выпустить новый. Ротация раз в 90 дней — хорошая практика, если токен лежит на нескольких машинах.
+  </FaqItem>
+  <FaqItem q="Webhook или long polling — что выбрать для бота MAX?">
+    Long polling — бот сам периодически опрашивает API через getUpdates. Удобно для разработки: не нужен публичный HTTPS, поднимается на ноутбуке за минуту. Webhook — MAX сам шлёт POST-запросы на ваш HTTPS-эндпоинт. Это режим продакшена: меньше задержка, меньше холостых запросов, лучше масштабируется. Требования к webhook: только HTTPS с валидным сертификатом, ответ за 60 секунд, поддержка secret_token для проверки подлинности через заголовок X-MAX-Bot-Api-Secret-Token. Переход с polling на webhook занимает минут 30, логика обработчика остаётся той же.
+  </FaqItem>
+  <FaqItem q="Какие основные методы есть в MAX Bot API?">
+    Все методы вызываются как POST на botapi.max.ru/bot&lt;TOKEN&gt;/methodName с JSON-телом. Базовый набор: getMe (информация о боте, ping), sendMessage (текст), editMessageText (изменить сообщение в течение 48 часов), deleteMessage (удалить), answerCallbackQuery (подтвердить нажатие кнопки), sendPhoto, sendDocument, setWebhook, deleteWebhook, getUpdates. Ответ всегда вида ok: true, result: ... или ok: false, error_code, description. Сигнатуры почти полностью совпадают с Telegram Bot API.
+  </FaqItem>
+  <FaqItem q="Какие лимиты у MAX Bot API на отправку сообщений?">
+    Ориентировочно: ~1 сообщение в секунду в один чат (для уведомлений ~30 в минуту), ~30 сообщений в секунду на бота всего, ~20 в минуту в группу. Длина текста — 4096 символов, длина caption у медиа — 1024 символа, callback_data — 64 байта, фото — до 10 МБ, документы — до 50 МБ. Inline-кнопок до 8 в строке. При превышении API возвращает 429 Too Many Requests с полем retry_after в секундах. Реализуйте экспоненциальный бэкофф; систематические нарушения приводят к временной блокировке, повторные — к перманентной.
+  </FaqItem>
+  <FaqItem q="Чем MAX Bot API отличается от Telegram Bot API?">
+    Базовый URL — botapi.max.ru вместо api.telegram.org. Регистрация — через системного родительского бота, не BotFather. Сигнатуры sendMessage, editMessageText, deleteMessage, callback_query практически идентичны. Inline_query, Mini Apps, платежи — поддержка зависит от версии MAX и может отличаться. Стикеры, voice/video notes — ограниченно. Business API — есть и является одной из ключевых фич MAX. Код, написанный против Telegram Bot API, переносится с минимальными правками: меняется базовый URL и обрабатываются недостающие типы апдейтов.
+  </FaqItem>
+  <FaqItem q="Как организовать FSM в боте на MAX Bot API?">
+    Бот без состояния — это команда «эхо». Любой осмысленный сценарий требует FSM: пользователь нажал «Записаться» → ввёл имя → выбрал услугу → подтвердил. Между шагами надо где-то хранить контекст. Для небольших ботов хватает Redis с TTL: ключ — user_id, значение — JSON с текущим шагом и собранными данными. Для серьёзных проектов лучше хранить состояние в основной БД (PostgreSQL), а Redis использовать только как кэш. Никогда не доверяйте клиенту — колбэк-данные кнопок можно подделать, поэтому каждое действие надо валидировать против хранимого состояния.
+  </FaqItem>
+  <FaqItem q="Какие типичные ошибки совершают разработчики на старте с MAX Bot API?">
+    Шесть граблей. Синхронные вызовы внешних API внутри обработчика — webhook должен отвечать быстро, иначе MAX ретраит апдейт. Лимиты не учтены — без бэкоффа массовая рассылка падает на полпути. Нет идемпотентности — сохраняйте update_id и игнорируйте повторы. Логи в stdout без структуры — лучше сразу JSON-лог + correlation ID. Длинный callback_data больше 64 байт — кнопка молча не работает. Токен в репозитории — даже private-репо это утечка: подрядчики, форки, бэкапы.
+  </FaqItem>
+  <FaqItem q="Как тестировать бота на MAX Bot API?">
+    Через локальный «эмулятор» апдейтов: маленький сервис, который шлёт в ваш webhook те же JSON-объекты, что приходят от настоящего MAX. Так покрываются юнит-тестами все сценарии без реального бота. Для интеграционных тестов используется отдельный «технический» бот в MAX. CI должен прогонять линтер, тайпчекер (TypeScript/Go), юнит-тесты и хотя бы один happy-path сценарий через эмулятор. FSM-логика — отличный кандидат на юнит-тесты, тестируем чистую функцию transition(state, event) → new_state.
+  </FaqItem>
+  <FaqItem q="Какой минимальный продакшен-сетап для бота на MAX Bot API?">
+    Базовый набор. Docker-образ не больше 200 МБ. Nginx (или Yandex ALB) как фронт с SSL. 1–2 реплики приложения за балансировщиком. Метрики (Prometheus/Grafana) и алерты на ошибки. Для большинства бизнес-ботов хватает 1 ГБ RAM и 1 vCPU. Узким местом обычно становится не код, а синхронные обращения к чужим API (CRM, банк, МИС) — поэтому критичные интеграции выносятся в очереди. Архитектурно с самого начала закладываем FSM в Redis, идемпотентность по update_id, проверку secret_token на webhook, структурное логирование и нормальный мониторинг.
+  </FaqItem>
+</Faq>
+
+<EndCTA>
+  Поможем с разработкой бота в MAX под вашу задачу — от ТЗ до запуска. Бесплатная оценка проекта в течение рабочего дня.
+</EndCTA>
