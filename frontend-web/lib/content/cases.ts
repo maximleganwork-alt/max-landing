@@ -16,6 +16,10 @@ export const casesContent: CasesContent = {
       metric: { value: "×2.5", label: "Скорость закрытия сделки" },
       tech: ["Next.js", "PostgreSQL", "Mango Office", "Госуслуги API"],
       visual: "kanban",
+      image: {
+        src: "/images/cases/web-realestate-skyhome-crm-dashboard.png",
+        alt: "CRM агентства недвижимости SkyHome: воронка сделок и канбан-доска",
+      },
       details: {
         challenge: [
           "32 риелтора, 4 офиса — сделки терялись между Excel, Trello и почтой.",
@@ -46,6 +50,10 @@ export const casesContent: CasesContent = {
       metric: { value: "+40%", label: "Онлайн-продажи абонементов" },
       tech: ["Next.js", "Prisma", "СБП", "WebPush"],
       visual: "schedule",
+      image: {
+        src: "/images/cases/web-fitness-fitloop-saas-dashboard.png",
+        alt: "SaaS-платформа сети фитнес-клубов FitLoop: расписание и абонементы",
+      },
       details: {
         challenge: [
           "Каждый клуб использовал свою таблицу — централизованной отчётности не было.",
@@ -76,6 +84,10 @@ export const casesContent: CasesContent = {
       metric: { value: "+50%", label: "Конверсия в заказ" },
       tech: ["Next.js", "Sanity", "ЮKassa", "Mindbox"],
       visual: "miniapp",
+      image: {
+        src: "/images/cases/web-cosmetics-glowlab-ecommerce-dashboard.png",
+        alt: "E-commerce косметического бренда GlowLab: каталог и оформление заказа",
+      },
       details: {
         challenge: [
           "Shopify был медленный, LCP 4.8 с — Google ранжировал ниже конкурентов.",
@@ -106,6 +118,10 @@ export const casesContent: CasesContent = {
       metric: { value: "−70%", label: "Время оформления заказа" },
       tech: ["Next.js", "1С:УТ", "PostgreSQL", "Redis"],
       visual: "dashboard",
+      image: {
+        src: "/images/cases/web-erp-magnumdistr-b2b-dashboard.png",
+        alt: "ERP-надстройка над 1С для дистрибьютора Magnum: B2B-кабинет менеджера",
+      },
       details: {
         challenge: [
           "Менеджеры работали в 1С:Толстый-клиент — обучение нового сотрудника шло месяц.",
@@ -136,6 +152,10 @@ export const casesContent: CasesContent = {
       metric: { value: "×4", label: "Скорость согласования RFQ" },
       tech: ["Next.js", "PostgreSQL", "СБИС", "Keycloak"],
       visual: "kanban",
+      image: {
+        src: "/images/cases/web-portal-stroyresurs-b2b-dashboard.png",
+        alt: "B2B-портал поставщика «СтройРесурс»: тендеры и кабинет снабженца",
+      },
       details: {
         challenge: [
           "RFQ-процесс шёл по почте: до 14 дней на согласование 1 спецификации.",
@@ -166,6 +186,10 @@ export const casesContent: CasesContent = {
       metric: { value: "−80%", label: "Время на расчёт ЗП" },
       tech: ["Next.js", "PostgreSQL", "МИС", "ЭЦП"],
       visual: "kanban",
+      image: {
+        src: "/images/cases/web-medcenter-virilis-admin-panel.png",
+        alt: "Админ-панель медцентра «Вирилис»: расписание врачей, касса и страховые",
+      },
       details: {
         challenge: [
           "Расчёт ЗП врачей делали бухгалтеры неделю — формулы зависели от 7 факторов.",

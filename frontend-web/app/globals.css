@@ -47,12 +47,8 @@
 }
 
 @layer base {
-  * {
-    @apply border-border;
-  }
 
   html {
-    scroll-behavior: smooth;
     scroll-padding-top: var(--header-height);
     -webkit-text-size-adjust: 100%;
   }

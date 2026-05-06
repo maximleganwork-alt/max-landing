@@ -107,7 +107,9 @@ export function buildSiteRobots(siteUrl?: string): MetadataRoute.Robots {
         disallow: ["/api/"],
       },
       {
-        userAgent: ["Yandex", "YandexBot", "YandexImages"],
+        // Голый `Yandex` устаревший; реальные краулеры — `YandexBot` (HTML),
+        // `YandexImages` (картинки), `YandexMedia` (мультимедиа), `YandexMobileBot`.
+        userAgent: ["YandexBot", "YandexImages", "YandexMedia", "YandexMobileBot"],
         allow: "/",
         disallow: ["/api/"],
       },

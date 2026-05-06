@@ -25,13 +25,11 @@ export const metadata: Metadata = {
     title: PAGE_TITLE,
     description: PAGE_DESCRIPTION,
     url: "/blog",
-    images: ["/blog/opengraph-image"],
   },
   twitter: {
     card: "summary_large_image",
     title: PAGE_TITLE,
     description: PAGE_DESCRIPTION,
-    images: ["/blog/opengraph-image"],
   },
   robots: {
     index: true,

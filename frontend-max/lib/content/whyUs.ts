@@ -24,7 +24,7 @@ export const whyUsContent: WhyUsContent = {
     },
     {
       icon: Briefcase,
-      title: "20+ клиентов",
+      title: "30+ клиентов",
       text: "Среди заказчиков — компании от стартапов до Enterprise. Понимаем процессы любого масштаба.",
     },
     {

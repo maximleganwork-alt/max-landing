@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, Manrope } from "next/font/google";
+import { Inter } from "next/font/google";
 import { Providers } from "shared/components/Providers";
 import { YandexMetrika } from "shared/components/analytics/YandexMetrika";
 import { CookieBanner } from "shared/components/analytics/CookieBanner";
@@ -14,12 +14,6 @@ const inter = Inter({
   preload: true,
 });
 
-const manrope = Manrope({
-  subsets: ["latin", "cyrillic"],
-  weight: ["500", "700", "800"],
-  display: "swap",
-  variable: "--font-manrope",
-});
 
 export const metadata: Metadata = buildSiteMetadata({ config: siteConfig });
 
@@ -27,10 +21,10 @@ export const viewport: Viewport = buildSiteViewport(siteConfig);
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ru-RU" className={`${inter.variable} ${manrope.variable}`}>
+    <html lang="ru-RU" className={`${inter.variable}`}>
       <head>
-        <link rel="preconnect" href="https://mc.yandex.ru" crossOrigin="" />
-        <link rel="dns-prefetch" href="https://mc.yandex.ru" />
+        {/* SmartCaptcha — необходимая антиспам-защита, грузится без согласия.
+            Yandex.Metrika preconnect срабатывает только после accept (см. YandexMetrika.tsx). */}
         <link rel="preconnect" href="https://smartcaptcha.yandexcloud.net" crossOrigin="" />
         <link rel="dns-prefetch" href="https://smartcaptcha.yandexcloud.net" />
       </head>

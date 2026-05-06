@@ -13,7 +13,7 @@ export const heroContent: HeroContent = {
   stats: [
     { value: 5, suffix: "+", label: "лет на рынке", animate: true },
     { value: 50, suffix: "+", label: "реализованных проектов", animate: true },
-    { value: 20, suffix: "+", label: "корпоративных клиентов", animate: true },
+    { value: 30, suffix: "+", label: "корпоративных клиентов", animate: true },
     { label: "поддержка", text: "24/7", animate: false },
   ],
 };

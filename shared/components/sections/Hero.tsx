@@ -50,7 +50,7 @@ export function Hero({
       <div
         className={
           visual
-            ? "container-narrow grid grid-cols-1 items-center gap-12 lg:grid-cols-[3fr_2fr] lg:gap-16"
+            ? "container-narrow grid grid-cols-1 items-center gap-8 sm:gap-12 lg:grid-cols-[3fr_2fr] lg:gap-16"
             : "container-narrow"
         }
       >
@@ -106,22 +106,31 @@ export function Hero({
             className="mt-4 grid grid-cols-2 gap-px rounded-[var(--radius)] border border-border bg-border overflow-hidden sm:grid-cols-4"
           >
             {stats.map((s, i) => (
-              <div key={i} className="bg-bg-card px-4 py-4 text-left">
-                <dd className="text-h2 font-bold text-fg">
+              // HTML5 явно допускает обёртку `<dt>/<dd>` в `<div>` внутри
+              // `<dl>` для группировки пар. Однако сам порядок DT-первым,
+              // DD-вторым — обязательное требование спеки. До правки шёл
+              // обратный, поэтому accessibility-tree описывал значение как
+              // «термин», а лейбл — как «описание».
+              <div key={i} className="bg-bg-card px-4 py-4 text-left flex flex-col">
+                <dt className="order-2 mt-1 text-caption text-fg-muted">{s.label}</dt>
+                <dd className="order-1 text-h2 font-bold text-fg">
                   {s.animate && s.value !== undefined ? (
                     <CountUp value={s.value} suffix={s.suffix} />
                   ) : (
                     <span>{s.text}</span>
                   )}
                 </dd>
-                <dt className="mt-1 text-caption text-fg-muted">{s.label}</dt>
               </div>
             ))}
           </m.dl>
         </m.div>
 
         {visual ? (
-          <div className="relative hidden items-center justify-center lg:flex">
+          // На мобильном визуал идёт ниже стэков и CTA — не задвигает h1/CTA
+          // под линию сгиба, но всё равно показывает «живой» продукт. Размер
+          // ограничен в самих визуалах (PhoneMockup: max-w-[340px],
+          // FloatingCardsMockup: max-w-[560px] aspect-[5/4]).
+          <div className="relative flex items-center justify-center order-last lg:order-none mx-auto w-full">
             {visual}
           </div>
         ) : null}

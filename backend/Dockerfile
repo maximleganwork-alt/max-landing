@@ -24,4 +24,10 @@ ENV PORT=8080
 EXPOSE 8080
 USER nonroot:nonroot
 
+# Distroless не содержит wget/curl/sh — пробу выполняет сам бинарь через
+# флаг `-healthcheck` (см. cmd/server/main.go). HTTP GET к /api/health,
+# exit 0/1.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/app/server", "-healthcheck"]
+
 ENTRYPOINT ["/app/server"]

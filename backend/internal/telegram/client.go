@@ -49,7 +49,7 @@ func (c *Client) Send(ctx context.Context, text string) error {
 	payload := sendMessagePayload{
 		ChatID:    c.chatID,
 		Text:      text,
-		ParseMode: "Markdown",
+		ParseMode: "MarkdownV2",
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

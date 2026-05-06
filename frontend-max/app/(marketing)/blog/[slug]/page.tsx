@@ -43,13 +43,11 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
       publishedTime: post.date,
       modifiedTime: post.updated ?? post.date,
       tags: post.tags,
-      images: [`${url}/opengraph-image`],
     },
     twitter: {
       card: "summary_large_image",
       title: post.title,
       description: post.description,
-      images: [`${url}/opengraph-image`],
     },
     robots: {
       index: true,
@@ -95,7 +93,6 @@ export default async function BlogPostPage({ params }: PageProps) {
           datePublished: post.date,
           dateModified: post.updated,
           keywords: post.tags,
-          imageUrl: `${siteConfig.siteUrl}/blog/${post.slug}/opengraph-image`,
           wordCount: reading.words,
           timeRequired: `PT${reading.minutes}M`,
           faqItems: faqItems.length > 0 ? faqItems : undefined,

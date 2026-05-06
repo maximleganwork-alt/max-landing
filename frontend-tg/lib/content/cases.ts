@@ -16,6 +16,10 @@ export const casesContent: CasesContent = {
       metric: { value: "×3", label: "Конверсия в покупку курса" },
       tech: ["Telegram Bot API", "Stars", "Mini Apps", "Stripe"],
       visual: "payment",
+      image: {
+        src: "/images/cases/tg-school-skillbreak-stars-chat.png",
+        alt: "Telegram-бот онлайн-школы SkillBreak с витриной курсов и оплатой Stars",
+      },
       details: {
         challenge: [
           "Продажа курсов через сайт + GetCourse — длинная воронка с 3 системами.",
@@ -46,6 +50,10 @@ export const casesContent: CasesContent = {
       metric: { value: "60%", label: "Заказов из Telegram" },
       tech: ["Mini Apps", "Next.js", "ЮKassa", "PostgreSQL"],
       visual: "miniapp",
+      image: {
+        src: "/images/cases/tg-shop-rawcorner-miniapp.png",
+        alt: "Telegram Mini App магазина RawCorner: каталог снаряжения и корзина",
+      },
       details: {
         challenge: [
           "Сайт был на старом Tilda — слабая мобильная конверсия.",
@@ -76,6 +84,10 @@ export const casesContent: CasesContent = {
       metric: { value: "−50%", label: "Звонков в поддержку" },
       tech: ["Telegram Bot API", "1С:WMS", "ЯндексКарты", "Go"],
       visual: "dashboard",
+      image: {
+        src: "/images/cases/tg-logistics-fastline-tracking-chat.png",
+        alt: "Telegram-бот трекинга заказов FastLine со статусами и картой курьера",
+      },
       details: {
         challenge: [
           "70% обращений в поддержку — «где мой заказ?».",
@@ -106,6 +118,10 @@ export const casesContent: CasesContent = {
       metric: { value: "70%", label: "Авторазбор обращений" },
       tech: ["GPT-4", "RAG", "Mini Apps", "Pinecone"],
       visual: "chat",
+      image: {
+        src: "/images/cases/tg-legal-rightline-ai-lawyer-chat.png",
+        alt: "AI-юрист в Telegram: бот RightLine с консультациями и шаблонами документов",
+      },
       details: {
         challenge: [
           "Юристы тратили час на каждую первичную консультацию.",
@@ -136,6 +152,10 @@ export const casesContent: CasesContent = {
       metric: { value: "+40%", label: "MRR за квартал" },
       tech: ["Telegram Stars", "СБП", "PostgreSQL", "Node.js"],
       visual: "payment",
+      image: {
+        src: "/images/cases/tg-community-techminds-subscription-chat.png",
+        alt: "Telegram-бот сообщества TechMinds: подписки Stars и автопродление",
+      },
       details: {
         challenge: [
           "Доступ выдавали вручную после оплаты — задержки до суток.",
@@ -166,6 +186,10 @@ export const casesContent: CasesContent = {
       metric: { value: "+20%", label: "Средний чек" },
       tech: ["Telegram Bot API", "iiko", "Mini Apps", "Redis"],
       visual: "schedule",
+      image: {
+        src: "/images/cases/tg-restaurant-osteria-booking-chat.png",
+        alt: "Telegram-бот ресторана «Остерия Сан-Марко»: бронь столиков и предзаказ",
+      },
       details: {
         challenge: [
           "Звонки и WhatsApp-чат с хостес — потеря 15% броней по выходным.",

@@ -82,6 +82,10 @@ export function buildSiteMetadata({ config, siteUrl }: BuildMetaArgs): Metadata 
       address: false,
       telephone: false,
     },
+    // `app/opengraph-image.tsx` отдаётся Next под URL `/opengraph-image`
+    // (БЕЗ `.png` — расширение даёт 404). На главной Next дополнительно
+    // добавляет ?hash для cache-busting; для дочерних страниц мы прописываем
+    // тот же путь руками — иначе Next не наследует og:image вверх по дереву.
     openGraph: {
       type: "website",
       locale: "ru_RU",
@@ -120,9 +124,9 @@ export function buildSiteMetadata({ config, siteUrl }: BuildMetaArgs): Metadata 
       },
       "max-image-preview": "large",
     },
-    // Only references real assets shipped under /public. The customer can add
-    // /favicon.ico and /apple-touch-icon.png later — the Next file convention
-    // (app/icon.svg, app/apple-icon.png) will pick them up automatically.
+    // Иконки: `app/icon.tsx` и `app/apple-icon.tsx` подхватываются Next.js
+    // автоматически (32×32 favicon + 180×180 apple-touch-icon). Доп. ставим
+    // `/icon.svg` из public — браузеры предпочитают SVG когда доступен.
     icons: {
       icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
     },

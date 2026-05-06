@@ -52,7 +52,7 @@ export default async function CasePage({ params }: PageProps) {
   return (
     <>
       <JsonLd
-        variant="legal"
+        variant="case"
         site={{
           brand: legalEntity.brand,
           legalName: legalEntity.legalName,
@@ -63,8 +63,17 @@ export default async function CasePage({ params }: PageProps) {
         }}
         breadcrumbs={[
           { name: "Главная", url: `${siteConfig.siteUrl}/` },
+          { name: "Кейсы", url: `${siteConfig.siteUrl}/#cases` },
           { name: item.client, url: `${siteConfig.siteUrl}/cases/${item.slug}` },
         ]}
+        caseStudy={{
+          url: `/cases/${item.slug}`,
+          title: item.task,
+          description: item.solution,
+          client: item.client,
+          industry: item.industry,
+          tech: item.tech,
+        }}
       />
       <Header {...headerContent} />
       <main id="main" className="pt-[calc(var(--header-height)+32px)]">
