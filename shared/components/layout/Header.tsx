@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ArrowRight, Menu, X } from "lucide-react";
 import { AnimatePresence, m } from "framer-motion";
@@ -15,14 +15,96 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
   const [hoveredNav, setHoveredNav] = useState<string | null>(null);
   const router = useRouter();
   const pathname = usePathname();
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
 
+  // Менеджмент состояния body-scroll и фокуса при открытии mobile-меню.
+  // На iOS Safari `overflow: hidden` на body НЕ блокирует body-scroll —
+  // поэтому используем position: fixed с сохранением scrollY (восстановим
+  // на закрытии). На Android/desktop достаточно `overflow: hidden`.
   useEffect(() => {
     if (!menuOpen) return;
-    document.body.style.overflow = "hidden";
+    const isIOS = /iP(hone|ad|od)/.test(navigator.platform || "") ||
+      (navigator.userAgent.includes("Mac") && "ontouchend" in document);
+    const scrollY = window.scrollY;
+    const body = document.body;
+    if (isIOS) {
+      body.style.position = "fixed";
+      body.style.top = `-${scrollY}px`;
+      body.style.left = "0";
+      body.style.right = "0";
+      body.style.width = "100%";
+    } else {
+      body.style.overflow = "hidden";
+    }
     return () => {
-      document.body.style.overflow = "";
+      if (isIOS) {
+        body.style.position = "";
+        body.style.top = "";
+        body.style.left = "";
+        body.style.right = "";
+        body.style.width = "";
+        window.scrollTo(0, scrollY);
+      } else {
+        body.style.overflow = "";
+      }
     };
   }, [menuOpen]);
+
+  // ESC закрывает меню; focus-trap удерживает Tab внутри drawer.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const drawer = drawerRef.current;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setMenuOpen(false);
+        menuButtonRef.current?.focus();
+        return;
+      }
+      if (e.key === "Tab" && drawer) {
+        const focusables = drawer.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    // Перевод фокуса на первый фокусируемый элемент drawer'а (доступность).
+    requestAnimationFrame(() => {
+      const first = drawer?.querySelector<HTMLElement>(
+        'a[href], button:not([disabled])',
+      );
+      first?.focus();
+    });
+    return () => document.removeEventListener("keydown", onKey);
+  }, [menuOpen]);
+
+  // После client-side навигации Next.js на `/#section` хеш в URL появляется,
+  // но браузер не делает scroll-to-anchor автоматически — нужно дождаться
+  // монтирования секции и сделать scroll вручную. RAF-петля с пределом ~1.5 с
+  // ловит как быструю отрисовку, так и медленную (lazy-секция или большая
+  // картинка над секцией ещё не загрузилась).
+  const scrollToAnchorAfterNav = (anchor: string) => {
+    let attempts = 0;
+    const tick = () => {
+      const el = document.getElementById(anchor);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      if (attempts++ < 90) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  };
 
   const handleNav = (e: React.MouseEvent<HTMLAnchorElement>, href: string) => {
     setMenuOpen(false);
@@ -30,10 +112,12 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
     // С глубоких страниц переходим на `/#section` через Next router.
     if (href.startsWith("#")) {
       e.preventDefault();
+      const id = href.replace("#", "");
       if (pathname === "/") {
-        smoothScrollTo(href.replace("#", ""));
+        smoothScrollTo(id);
       } else {
         router.push(`/${href}`);
+        scrollToAnchorAfterNav(id);
       }
       return;
     }
@@ -53,6 +137,7 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
       smoothScrollTo("lead-form");
     } else {
       router.push("/#lead-form");
+      scrollToAnchorAfterNav("lead-form");
     }
   };
 
@@ -126,9 +211,11 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
           </Button>
 
           <button
+            ref={menuButtonRef}
             type="button"
-            aria-label="Открыть меню"
+            aria-label={menuOpen ? "Закрыть меню" : "Открыть меню"}
             aria-expanded={menuOpen}
+            aria-controls="mobile-menu-drawer"
             onClick={() => setMenuOpen((v) => !v)}
             className={cn(
               "lg:hidden inline-flex h-10 w-10 items-center justify-center rounded-md",
@@ -145,6 +232,8 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
       <AnimatePresence>
         {menuOpen ? (
           <m.div
+            ref={drawerRef}
+            id="mobile-menu-drawer"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -152,6 +241,7 @@ export function Header({ ariaLabel, navItems, ctaLabel }: HeaderContent) {
             className="lg:hidden fixed inset-0 top-[var(--header-height)] z-30 bg-bg"
             role="dialog"
             aria-modal="true"
+            aria-label="Меню навигации"
           >
             <nav
               aria-label="Мобильное меню"

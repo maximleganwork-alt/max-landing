@@ -10,7 +10,9 @@ interface LogoProps {
 }
 
 /**
- * Монограмма L+S одной непрерывной обводкой + wordmark «Legan Studio» в Manrope.
+ * Монограмма L+S одной непрерывной обводкой + wordmark «Legan Studio» в Inter.
+ * Inter уже подключён глобально, отдельный шрифт ради двух мест (хедер + футер)
+ * не нужен — экономим ~30-50KB на каждом landing.
  * Знак — кастомный SVG-путь (L → хвост L → нижняя кривая S → верхняя кривая S).
  */
 export function Logo({
@@ -46,7 +48,7 @@ export function Logo({
       {iconOnly ? null : (
         <span
           className={cn(
-            "font-manrope font-extrabold text-body-lg leading-none tracking-tight",
+            "font-extrabold text-body-lg leading-none tracking-tight",
             textClassName,
           )}
         >

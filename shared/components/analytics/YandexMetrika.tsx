@@ -24,6 +24,11 @@ export function YandexMetrika() {
 
   return (
     <>
+      {/* Preconnect рядом с инициализацией — чтобы соединение к mc.yandex.ru
+          открылось ТОЛЬКО после accept в cookie-баннере. До согласия в DOM
+          никакого ресурса с этого домена нет. */}
+      <link rel="preconnect" href="https://mc.yandex.ru" crossOrigin="" />
+      <link rel="dns-prefetch" href="https://mc.yandex.ru" />
       <Script id="ym-init" strategy="afterInteractive">
         {`
           (function(m,e,t,r,i,k,a){

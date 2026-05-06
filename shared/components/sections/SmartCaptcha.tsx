@@ -122,8 +122,12 @@ export const SmartCaptcha = forwardRef<SmartCaptchaHandle, SmartCaptchaProps>(
 
     return (
       <>
+        {/* Без `?render=onload` Yandex SmartCaptcha экспортирует
+            `window.smartCaptcha` сразу при загрузке — `onLoad` next/script
+            ловит готовый API. Раньше был `?render=onload&onload=...` с
+            несуществующим callback'ом → варнинг в консоли. */}
         <Script
-          src="https://smartcaptcha.yandexcloud.net/captcha.js?render=onload&onload=onSmartCaptchaLoad"
+          src="https://smartcaptcha.yandexcloud.net/captcha.js"
           strategy="afterInteractive"
           onLoad={renderWidget}
         />

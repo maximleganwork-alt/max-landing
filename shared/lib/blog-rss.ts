@@ -44,10 +44,19 @@ function hasBody(p: BlogPostSummary | BlogPost): p is BlogPost {
 export function buildBlogRss({ siteUrl, siteName, description, posts }: BuildRssArgs): string {
   const lastBuild =
     (posts[0] && (posts[0].updated ?? posts[0].date)) ?? new Date().toISOString();
+  // Группируем посты по дате публикации, чтобы внутри одного дня каждому
+  // выдать уникальную минуту — иначе фид-ридеры показывают их в случайном
+  // порядке. Сортировка стабильная: posts уже идут по дате убыванию,
+  // внутри даты — по индексу. Свежий пост в этой группе получает 09:00,
+  // следующий — 08:59, потом 08:58 и т. д.
+  const dayCounter = new Map<string, number>();
   const items = posts
     .map((p) => {
+      const idx = dayCounter.get(p.date) ?? 0;
+      dayCounter.set(p.date, idx + 1);
+      const minutes = Math.max(0, 60 - idx).toString().padStart(2, "0");
       const url = `${siteUrl}/blog/${p.slug}`;
-      const pubDate = new Date(`${p.date}T08:00:00Z`).toUTCString();
+      const pubDate = new Date(`${p.date}T08:${minutes}:00Z`).toUTCString();
       const tags = p.tags.map((t) => `<category>${escapeXml(t)}</category>`).join("");
       const contentEncoded = hasBody(p)
         ? `\n      <content:encoded>${wrapCdata(mdxToRssHtml(p.body, siteUrl))}</content:encoded>`

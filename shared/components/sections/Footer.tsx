@@ -32,7 +32,9 @@ export function Footer({
             <ul className="flex items-center gap-2 list-none p-0 m-0">
               {social.map((s) => {
                 const Icon = s.kind === "telegram" ? Send : MessageCircle;
-                const isExternal = /^https?:\/\//.test(s.href);
+                // Любой не-внутренний URL открываем в новой вкладке: https/http,
+                // mailto/tel/sms — пользователь не должен терять страницу.
+                const isExternal = /^(https?|mailto|tel|sms):/.test(s.href);
                 return (
                   <li key={s.label}>
                     <a
@@ -57,12 +59,16 @@ export function Footer({
             <ul className="flex flex-col gap-3">
               {services.map((s) => (
                 <li key={s.label}>
-                  <a
-                    href={s.href}
-                    className="text-body-sm text-slate-200 hover:text-white transition-colors"
-                  >
-                    {s.label}
-                  </a>
+                  {s.href ? (
+                    <a
+                      href={s.href}
+                      className="text-body-sm text-slate-200 hover:text-white transition-colors"
+                    >
+                      {s.label}
+                    </a>
+                  ) : (
+                    <span className="text-body-sm text-slate-300">{s.label}</span>
+                  )}
                 </li>
               ))}
             </ul>
@@ -75,12 +81,16 @@ export function Footer({
             <ul className="flex flex-col gap-3">
               {company.map((s) => (
                 <li key={s.label}>
-                  <a
-                    href={s.href}
-                    className="text-body-sm text-slate-200 hover:text-white transition-colors"
-                  >
-                    {s.label}
-                  </a>
+                  {s.href ? (
+                    <a
+                      href={s.href}
+                      className="text-body-sm text-slate-200 hover:text-white transition-colors"
+                    >
+                      {s.label}
+                    </a>
+                  ) : (
+                    <span className="text-body-sm text-slate-300">{s.label}</span>
+                  )}
                 </li>
               ))}
             </ul>
@@ -93,13 +103,17 @@ export function Footer({
             <ul className="flex flex-col gap-3">
               {docs.map((s) => (
                 <li key={s.label}>
-                  <Link
-                    href={s.href}
-                    prefetch
-                    className="text-body-sm text-slate-200 hover:text-white transition-colors"
-                  >
-                    {s.label}
-                  </Link>
+                  {s.href ? (
+                    <Link
+                      href={s.href}
+                      prefetch={false}
+                      className="text-body-sm text-slate-200 hover:text-white transition-colors"
+                    >
+                      {s.label}
+                    </Link>
+                  ) : (
+                    <span className="text-body-sm text-slate-300">{s.label}</span>
+                  )}
                 </li>
               ))}
             </ul>

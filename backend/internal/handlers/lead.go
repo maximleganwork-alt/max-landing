@@ -74,7 +74,9 @@ func (h *LeadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// остаться каналом уведомлений, а не единственным хранилищем ПДн.
 	text := formatTelegramMessage(lead)
 	if err := h.Telegram.Send(ctx, text); err != nil {
-		log.Printf("[lead] telegram send failed ip=%s err=%v\nMessage:\n%s", ip, err, text)
+		// Логируем только метаданные; тело сообщения содержит ПДн (имя, контакт)
+		// и не должно попадать в stdout/файлы логов (152-ФЗ + GDPR-практика).
+		log.Printf("[lead] telegram send failed ip=%s err=%v", ip, err)
 		if !errors.Is(err, telegram.ErrNotConfigured) {
 			writeError(w, http.StatusInternalServerError, "internal")
 			return
@@ -113,12 +115,30 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-func escapeMarkdown(s string) string {
+// escapeMarkdownV2 экранирует все 18 спецсимволов MarkdownV2 (Telegram Bot API).
+// Без полного списка пользовательский ввод с `]`, `(`, `)`, `.` и т. д. ломает
+// парсер и Telegram возвращает 400 entity_invalid.
+// https://core.telegram.org/bots/api#markdownv2-style
+func escapeMarkdownV2(s string) string {
 	replacer := strings.NewReplacer(
 		"_", "\\_",
 		"*", "\\*",
-		"`", "\\`",
 		"[", "\\[",
+		"]", "\\]",
+		"(", "\\(",
+		")", "\\)",
+		"~", "\\~",
+		"`", "\\`",
+		">", "\\>",
+		"#", "\\#",
+		"+", "\\+",
+		"-", "\\-",
+		"=", "\\=",
+		"|", "\\|",
+		"{", "\\{",
+		"}", "\\}",
+		".", "\\.",
+		"!", "\\!",
 	)
 	return replacer.Replace(s)
 }
@@ -145,24 +165,20 @@ func formatTelegramMessage(lead validation.Lead) string {
 		b.WriteString("*🆕 Новая заявка*\n\n")
 	}
 
-	fmt.Fprintf(&b, "👤 *Имя:* %s\n", escapeMarkdown(lead.Name))
-	fmt.Fprintf(&b, "📱 *Контакт:* %s\n", escapeMarkdown(lead.Contact))
+	fmt.Fprintf(&b, "👤 *Имя:* %s\n", escapeMarkdownV2(lead.Name))
+	fmt.Fprintf(&b, "📱 *Контакт:* %s\n", escapeMarkdownV2(lead.Contact))
 
 	label := lead.TariffLabel
 	if label == "" {
 		label = validation.TariffLabel(lead.Tariff)
 	}
 	if label != "" {
-		fmt.Fprintf(&b, "💼 *Тариф:* %s\n", escapeMarkdown(label))
-	}
-
-	if lead.Service != "" {
-		fmt.Fprintf(&b, "🛠 *Услуга:* %s\n", escapeMarkdown(lead.Service))
+		fmt.Fprintf(&b, "💼 *Тариф:* %s\n", escapeMarkdownV2(label))
 	}
 
 	if lead.Message != "" {
 		b.WriteString("\n📝 *Задача:*\n")
-		b.WriteString(escapeMarkdown(lead.Message))
+		b.WriteString(escapeMarkdownV2(lead.Message))
 		b.WriteString("\n")
 	}
 
@@ -183,7 +199,7 @@ func formatTelegramMessage(lead validation.Lead) string {
 		utmParts = append(utmParts, "term="+lead.UTMTerm)
 	}
 	if len(utmParts) > 0 {
-		fmt.Fprintf(&b, "\n🔗 *UTM:* %s\n", escapeMarkdown(strings.Join(utmParts, " · ")))
+		fmt.Fprintf(&b, "\n🔗 *UTM:* %s\n", escapeMarkdownV2(strings.Join(utmParts, " · ")))
 	}
 
 	return b.String()

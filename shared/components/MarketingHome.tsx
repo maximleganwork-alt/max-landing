@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import dynamic from "next/dynamic";
 import { Header } from "./layout/Header";
+import { StickyCTA } from "./layout/StickyCTA";
 import { Hero } from "./sections/Hero";
 import { Services } from "./sections/Services";
 import { Cases } from "./sections/Cases";
@@ -84,6 +85,7 @@ export function MarketingHome({ contents, heroVisual }: MarketingHomeProps) {
         <LeadForm {...contents.leadForm} tariffLabels={tariffLabels} />
       </main>
       <Footer {...contents.footer} />
+      <StickyCTA />
     </>
   );
 }

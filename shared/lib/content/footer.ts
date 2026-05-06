@@ -1,6 +1,8 @@
 export interface FooterLink {
   label: string;
-  href: string;
+  /** Если ссылка — указываем `href`. Если текстовый пункт без ссылки — `text: true`. */
+  href?: string;
+  text?: boolean;
 }
 
 export interface FooterSocial {

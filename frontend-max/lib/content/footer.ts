@@ -5,11 +5,11 @@ export const footerContent: FooterContent = {
     "Студия разработки ботов и AI-решений для MAX. От технического задания до запуска под ключ.",
   servicesTitle: "Услуги",
   services: [
-    { label: "Боты поддержки", href: "/#services" },
-    { label: "Продающие боты", href: "/#services" },
-    { label: "AI-интеграции", href: "/#services" },
-    { label: "Мини-приложения", href: "/#services" },
-    { label: "Корпоративные боты", href: "/#services" },
+    { label: "Боты поддержки и AI", text: true },
+    { label: "Продающие боты", text: true },
+    { label: "Мини-приложения", text: true },
+    { label: "Корпоративные боты", text: true },
+    { label: "Все услуги →", href: "/#services" },
   ],
   companyTitle: "Компания",
   company: [
@@ -26,7 +26,11 @@ export const footerContent: FooterContent = {
     { label: "Договор-оферта", href: "/offer" },
   ],
   social: [
-    { label: "Написать в MAX", href: "#", kind: "max" },
+    {
+      label: "Написать в MAX",
+      href: "https://max.ru/u/f9LHodD0cOKjUd8UClXenOZwU5qXWJ9wt6FCPLR7Ha3GUJ4fhkE5RJJ-rLo",
+      kind: "max",
+    },
     { label: "Написать в Telegram", href: "https://t.me/legan_studio", kind: "telegram" },
   ],
   copyright: "© 2026 Legan Studio. Все права защищены.",

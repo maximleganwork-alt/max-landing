@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useId, useState, type ReactNode } from "react";
-import { AnimatePresence, m } from "framer-motion";
+import { m } from "framer-motion";
 import { Plus } from "lucide-react";
 import { reachGoal } from "../../lib/analytics";
 import { cn } from "../../lib/utils";
@@ -51,22 +51,21 @@ export function AccordionItem({ question, children, defaultOpen = false }: Accor
           </m.span>
         </button>
       </h3>
-      <AnimatePresence initial={false}>
-        {open ? (
-          <m.div
-            id={contentId}
-            role="region"
-            aria-labelledby={buttonId}
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: "easeOut" }}
-            className="overflow-hidden"
-          >
-            <div className="pb-5 text-body text-fg-muted leading-relaxed">{children}</div>
-          </m.div>
-        ) : null}
-      </AnimatePresence>
+      {/* Контент всегда в DOM — нужно для FAQ Rich Results (Google требует
+          видимые в HTML ответы) и для индексации текста краулерами. Анимация
+          через height: auto ↔ 0, скрытие от screen-readers — aria-hidden. */}
+      <m.div
+        id={contentId}
+        role="region"
+        aria-labelledby={buttonId}
+        aria-hidden={!open}
+        initial={false}
+        animate={{ height: open ? "auto" : 0, opacity: open ? 1 : 0 }}
+        transition={{ duration: 0.25, ease: "easeOut" }}
+        className="overflow-hidden"
+      >
+        <div className="pb-5 text-body text-fg-muted leading-relaxed">{children}</div>
+      </m.div>
     </div>
   );
 }

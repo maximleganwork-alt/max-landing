@@ -55,8 +55,27 @@ export interface JsonLdBlogListItem {
   datePublished: string;
 }
 
+/**
+ * Кейс портфолио — узкая выжимка из CaseStudy без визуальных полей.
+ * Передаётся через `variant: "case"` для рендера CreativeWork/Article.
+ */
+export interface JsonLdCaseStudy {
+  /** URL кейса относительно `siteUrl` (например `/cases/foo`). */
+  url: string;
+  /** Заголовок — обычно `task` кейса. */
+  title: string;
+  /** Описание — обычно `solution` кейса. */
+  description: string;
+  /** Анонимизированный ярлык клиента, попадает в `about`. */
+  client: string;
+  /** Тег индустрии для `about.industry`. */
+  industry: string;
+  /** Перечисленные технологии — `keywords`. */
+  tech?: string[];
+}
+
 interface JsonLdProps {
-  variant?: "home" | "legal" | "blog" | "blogPosting";
+  variant?: "home" | "legal" | "blog" | "blogPosting" | "case";
   breadcrumbs?: { name: string; url: string }[];
   site: JsonLdSiteInfo;
   /** Tariff plans surfaced as Service offers + an OfferCatalog. */
@@ -71,6 +90,8 @@ interface JsonLdProps {
   blogPosting?: JsonLdBlogPosting;
   /** Listing items — for `variant: "blog"` (Blog + ItemList). */
   blogListing?: { url: string; items: JsonLdBlogListItem[] };
+  /** Single case-study — for `variant: "case"`. */
+  caseStudy?: JsonLdCaseStudy;
 }
 
 const SCHEMA = "https://schema.org";
@@ -95,6 +116,7 @@ export function JsonLd({
   legalDocumentType,
   blogPosting,
   blogListing,
+  caseStudy,
 }: JsonLdProps) {
   const siteUrl = site.siteUrl.replace(/\/+$/, "");
   const homeUrl = `${siteUrl}/`;
@@ -325,6 +347,33 @@ export function JsonLd({
         })),
       });
     }
+  }
+
+  if (variant === "case" && caseStudy) {
+    const caseUrl = caseStudy.url.startsWith("http")
+      ? caseStudy.url
+      : `${siteUrl}${caseStudy.url}`;
+    graph.push({
+      "@type": "CreativeWork",
+      "@id": `${caseUrl}#case`,
+      name: caseStudy.title,
+      headline: caseStudy.title,
+      description: caseStudy.description,
+      url: caseUrl,
+      author: { "@id": orgId },
+      creator: { "@id": orgId },
+      publisher: { "@id": orgId },
+      isPartOf: { "@id": websiteId },
+      inLanguage: "ru-RU",
+      about: {
+        "@type": "Organization",
+        name: caseStudy.client,
+        ...(caseStudy.industry ? { industry: caseStudy.industry } : {}),
+      },
+      ...(caseStudy.tech && caseStudy.tech.length
+        ? { keywords: caseStudy.tech.join(", ") }
+        : {}),
+    });
   }
 
   if (variant === "legal" && legalDocumentType && breadcrumbs && breadcrumbs.length > 0) {

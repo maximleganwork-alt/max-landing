@@ -70,4 +70,10 @@ USER node
 
 EXPOSE 3000
 
+# Alpine содержит wget; у Next.js нет встроенного /healthz, поэтому
+# пробуем GET / — Next отдаст 200 на главной.
+# `--spider` не качает тело, отдаёт exit 0 при 2xx/3xx.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD wget --spider -q http://127.0.0.1:3000/ || exit 1
+
 CMD ["node", "frontend-max/server.js"]
